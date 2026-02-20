@@ -1,10 +1,29 @@
-import express from 'express'
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import path from 'path';
+import cors from 'cors';
 
-const app = express()
+import userRoutes from './routes/userRoutes.js';
+import listingRoutes from './routes/listingRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 
-// Routes Connect
+const app = express();
 
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/profile', require('./routes/profile'));
+app.use(express.json());
+app.use(cookieParser());
 
-export default app
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    credentials: true,
+  })
+);
+
+const __dirname = path.resolve();
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+app.use('/api/users', userRoutes);
+app.use('/api/listings', listingRoutes);
+app.use('/api/admin', adminRoutes);
+
+export default app;
