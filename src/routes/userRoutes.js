@@ -9,7 +9,7 @@ import {
   updateUserProfile,
   updateCreatorProfile,
 } from '../controllers/userController.js';
-import { authMiddleware, authorizeRoles } from '../middlewares/auth.js'; 
+import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 
 const router = express.Router();
 
@@ -19,12 +19,20 @@ router.post('/logout', logoutUser);
 
 router.get('/me', authMiddleware, getMyProfile);
 
-router.put('/update-profile', authMiddleware, updateUserProfile);
+router.put(
+  '/update-profile',
+  authMiddleware,
+  upload.fields([
+    { name: 'profileImage', maxCount: 1 },
+    { name: 'coverImage', maxCount: 1 },
+  ]),
+  updateUserProfile
+);
 
 router.put(
   '/update-creator-profile',
   authMiddleware,
-  authorizeRoles('creator'), 
+  authorizeRoles('creator'),
   upload.fields([
     { name: 'profileImage', maxCount: 1 },
     { name: 'coverImage', maxCount: 1 },

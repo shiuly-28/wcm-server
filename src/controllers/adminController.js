@@ -105,3 +105,22 @@ export const deleteListingByAdmin = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+export const updateListingStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const updatedListing = await Listing.findByIdAndUpdate(
+      id,
+      { $set: { status } },
+      { new: true }
+    ).populate('creatorId', 'firstName lastName email');
+
+    if (!updatedListing) return res.status(404).json({ message: 'Listing not found' });
+
+    res.status(200).json({ message: `Listing is now ${status}`, updatedListing });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

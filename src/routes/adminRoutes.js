@@ -6,6 +6,7 @@ import {
   rejectCreator,
   toggleUserStatus,
   manageListings,
+  updateListingStatus,
 } from '../controllers/adminController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 
@@ -18,6 +19,7 @@ router.get('/users', getAllUsers);
 router.get('/creator-requests', getCreatorRequests);
 router.put('/approve-creator/:userId', approveCreator);
 router.put('/reject-creator/:userId', rejectCreator);
+router.put('/update-status/:id', updateListingStatus);
 router.put('/toggle-status/:userId', toggleUserStatus);
 router.get('/listings', manageListings);
 
