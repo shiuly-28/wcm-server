@@ -4,7 +4,7 @@ import path from 'path';
 
 export const createListing = async (req, res) => {
   try {
-    const { title, externalUrl, region, country, tradition, culturalTags } = req.body;
+    const { title, description, externalUrl, region, country, tradition, culturalTags } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ message: 'Please upload an image' });
@@ -15,6 +15,7 @@ export const createListing = async (req, res) => {
     const newListing = await Listing.create({
       creatorId: req.user._id,
       title,
+      description,
       externalUrl,
       region,
       country,
@@ -42,6 +43,10 @@ export const updateListing = async (req, res) => {
 
     let updateData = { ...req.body };
 
+    if (updateData.culturalTags && typeof updateData.culturalTags === 'string') {
+      updateData.culturalTags = updateData.culturalTags.split(',');
+    }
+
     if (req.file) {
       const oldImagePath = path.join(process.cwd(), listing.image);
       if (fs.existsSync(oldImagePath)) {
@@ -50,9 +55,42 @@ export const updateListing = async (req, res) => {
       updateData.image = `/uploads/listings/${req.file.filename}`;
     }
 
-    const updatedListing = await Listing.findByIdAndUpdate(id, { $set: updateData }, { new: true });
+    const updatedListing = await Listing.findByIdAndUpdate(
+      id,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
 
-    res.status(200).json({ message: 'Listing updated', updatedListing });
+    res.status(200).json({ message: 'Listing updated successfully', updatedListing });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const toggleFavorite = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const listing = await Listing.findById(id);
+    if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+    const isFavorited = listing.favorites.includes(userId);
+
+    if (isFavorited) {
+      listing.favorites = listing.favorites.filter(
+        (favId) => favId.toString() !== userId.toString()
+      );
+    } else {
+      listing.favorites.push(userId);
+    }
+
+    await listing.save();
+    res.status(200).json({
+      message: isFavorited ? 'Removed from favorites' : 'Added to favorites',
+      favoritesCount: listing.favorites.length,
+      isFavorited: !isFavorited,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

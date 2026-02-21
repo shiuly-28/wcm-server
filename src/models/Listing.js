@@ -12,6 +12,11 @@ const listingSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     externalUrl: {
       type: String,
       required: true,
@@ -42,11 +47,17 @@ const listingSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    favorites: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
   },
   { timestamps: true }
 );
 
-listingSchema.index({ title: 'text', country: 'text', tradition: 'text' });
+listingSchema.index({ title: 'text', country: 'text', tradition: 'text', description: 'text' });
 
 const Listing = mongoose.model('Listing', listingSchema);
 export default Listing;
