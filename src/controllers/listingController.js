@@ -67,6 +67,36 @@ export const updateListing = async (req, res) => {
   }
 };
 
+// export const toggleFavorite = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const userId = req.user._id;
+
+//     const listing = await Listing.findById(id);
+//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+//     const isFavorited = listing.favorites.includes(userId);
+
+//     if (isFavorited) {
+//       listing.favorites = listing.favorites.filter(
+//         (favId) => favId.toString() !== userId.toString()
+//       );
+//     } else {
+//       listing.favorites.push(userId);
+//     }
+
+//     await listing.save();
+//     res.status(200).json({
+//       message: isFavorited ? 'Removed from favorites' : 'Added to favorites',
+//       favoritesCount: listing.favorites.length,
+//       isFavorited: !isFavorited,
+//     });
+//   } catch (error) {
+//     res.status(500).json({ message: error.message });
+//   }
+// };
+
+
 export const toggleFavorite = async (req, res) => {
   try {
     const { id } = req.params;
@@ -122,6 +152,30 @@ export const deleteListing = async (req, res) => {
 export const getMyListings = async (req, res) => {
   try {
     const listings = await Listing.find({ creatorId: req.user._id }).sort({ createdAt: -1 });
+    res.status(200).json(listings);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const getPublicListings = async (req, res) => {
+  try {
+    const { filter } = req.query;
+    let query = { status: 'approved' }; 
+
+    const now = new Date();
+    if (filter === 'Today') {
+      const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+      query.createdAt = { $gte: startOfDay };
+    } else if (filter === 'This week') {
+      const startOfWeek = new Date(now.setDate(now.getDate() - 7));
+      query.createdAt = { $gte: startOfWeek };
+    }
+
+    const listings = await Listing.find(query)
+      .populate('creatorId', 'username') 
+      .sort({ createdAt: -1 });
+
     res.status(200).json(listings);
   } catch (error) {
     res.status(500).json({ message: error.message });

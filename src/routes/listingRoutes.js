@@ -5,12 +5,19 @@ import {
   getMyListings,
   updateListing,
   deleteListing,
+  getPublicListings,
+  toggleFavorite,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 
 const router = express.Router();
 
+router.get('/public', getPublicListings);
+
 router.use(authMiddleware);
+
+router.post('/favorite/:id', toggleFavorite);
+
 router.use(authorizeRoles('creator'));
 
 router.post('/add', upload.single('image'), createListing);
