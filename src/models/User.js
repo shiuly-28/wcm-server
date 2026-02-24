@@ -20,6 +20,12 @@ const userSchema = new mongoose.Schema(
     creatorRequest: {
       isApplied: { type: Boolean, default: false },
       appliedAt: { type: Date },
+      status: {
+        type: String,
+        enum: ['pending', 'approved', 'rejected', 'needs_review'],
+        default: 'pending',
+      },
+      rejectionReason: { type: String, default: '' }, 
       adminComment: { type: String, default: '' },
     },
     profile: {

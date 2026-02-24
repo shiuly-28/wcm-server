@@ -97,11 +97,15 @@ export const becomeCreator = async (req, res) => {
           'profile.socialLink': socialLink,
           'profile.profileImage': profilePath,
           'profile.coverImage': coverPath,
+
           'creatorRequest.isApplied': true,
           'creatorRequest.appliedAt': Date.now(),
+          'creatorRequest.status': 'pending',
+          'creatorRequest.rejectionReason': '',
+          'creatorRequest.adminComment': 'Re-applied for verification.',
         },
       },
-      { returnDocument: 'after', runValidators: true }
+      { new: true, runValidators: true }
     ).select('-password');
 
     if (!user) {
@@ -128,7 +132,6 @@ export const getMyProfile = async (req, res) => {
   }
 };
 
-// ৫. Logout
 // ৫. Logout
 export const logoutUser = (req, res) => {
   res.clearCookie('token', {
@@ -169,28 +172,32 @@ export const updateUserProfile = async (req, res) => {
       }
     }
 
+    const updateData = {
+      firstName,
+      lastName,
+      'profile.displayName': displayName,
+      'profile.bio': bio,
+      'profile.country': country,
+      'profile.city': city,
+      'profile.language': language,
+      'profile.websiteLink': websiteLink,
+      'profile.socialLink': socialLink,
+      'profile.profileImage': profilePath,
+      'profile.coverImage': coverPath,
+    };
+
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
-      {
-        $set: {
-          firstName,
-          lastName,
-          'profile.displayName': displayName,
-          'profile.bio': bio,
-          'profile.country': country,
-          'profile.city': city,
-          'profile.language': language,
-          'profile.websiteLink': websiteLink,
-          'profile.socialLink': socialLink,
-          'profile.profileImage': profilePath,
-          'profile.coverImage': coverPath,
-        },
-      },
+      { $set: updateData },
       { new: true, runValidators: true }
     ).select('-password');
 
-    res.status(200).json({ message: 'Profile updated successfully', user: updatedUser });
+    res.status(200).json({
+      message: 'Profile updated successfully',
+      user: updatedUser,
+    });
   } catch (error) {
+    console.error('Update Profile Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
