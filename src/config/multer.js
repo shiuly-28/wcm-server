@@ -1,40 +1,30 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    let folder = 'listings';
-    if (req.originalUrl.includes('tags')) {
-      folder = 'tags';
-    }
-
-    const uploadPath = path.join(process.cwd(), `uploads/${folder}`);
-
+    const uploadPath = path.join(process.cwd(), 'uploads/listings');
     if (!fs.existsSync(uploadPath)) {
       fs.mkdirSync(uploadPath, { recursive: true });
     }
-
     cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
+    const randomName = crypto.randomBytes(16).toString('hex');
+    const extension = path.extname(file.originalname);
+    cb(null, `${randomName}${extension}`);
   },
 });
 
-const fileFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith('image/')) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only images are allowed!'), false);
-  }
-};
-
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 1024 * 1024 * 5 },
-  fileFilter: fileFilter,
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, 
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only images are allowed!'), false);
+  },
 });
 
 export default upload;

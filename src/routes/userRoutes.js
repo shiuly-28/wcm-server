@@ -42,7 +42,7 @@ router.put(
 
 router.post(
   '/become-creator',
-  authMiddleware,
+  authorizeRoles('user'),
   upload.fields([
     { name: 'profileImage', maxCount: 1 },
     { name: 'coverImage', maxCount: 1 },

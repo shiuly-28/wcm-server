@@ -172,32 +172,28 @@ export const updateUserProfile = async (req, res) => {
       }
     }
 
-    const updateData = {
-      firstName,
-      lastName,
-      'profile.displayName': displayName,
-      'profile.bio': bio,
-      'profile.country': country,
-      'profile.city': city,
-      'profile.language': language,
-      'profile.websiteLink': websiteLink,
-      'profile.socialLink': socialLink,
-      'profile.profileImage': profilePath,
-      'profile.coverImage': coverPath,
-    };
-
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
-      { $set: updateData },
+      {
+        $set: {
+          firstName,
+          lastName,
+          'profile.displayName': displayName,
+          'profile.bio': bio,
+          'profile.country': country,
+          'profile.city': city,
+          'profile.language': language,
+          'profile.websiteLink': websiteLink,
+          'profile.socialLink': socialLink,
+          'profile.profileImage': profilePath,
+          'profile.coverImage': coverPath,
+        },
+      },
       { new: true, runValidators: true }
     ).select('-password');
 
-    res.status(200).json({
-      message: 'Profile updated successfully',
-      user: updatedUser,
-    });
+    res.status(200).json({ message: 'Profile updated successfully', user: updatedUser });
   } catch (error) {
-    console.error('Update Profile Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
