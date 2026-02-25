@@ -189,7 +189,7 @@ export const updateUserProfile = async (req, res) => {
           'profile.coverImage': coverPath,
         },
       },
-      { new: true, runValidators: true }
+      { returnDocument: 'after' }
     ).select('-password');
 
     res.status(200).json({ message: 'Profile updated successfully', user: updatedUser });
