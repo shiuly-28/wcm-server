@@ -14,6 +14,7 @@ import {
   updateTag,
   deleteTag,
   exportUsersExcel,
+  getAdminStats,
 } from '../controllers/adminController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 import upload from '../config/multer.js';
@@ -39,5 +40,6 @@ router.put('/update-status/:id', updateListingStatus);
 router.put('/toggle-status/:userId', toggleUserStatus);
 router.get('/listings', manageListings);
 router.get('/export-users', exportUsersExcel);
+router.get('/stats', getAdminStats);
 
 export default router;

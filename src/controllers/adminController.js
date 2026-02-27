@@ -303,23 +303,21 @@ export const updateListingStatus = async (req, res) => {
 
 export const exportUsersExcel = async (req, res) => {
   try {
-    const userCursor = User.find().select('-password').cursor();
+    const userCursor = User.find({}).select('-password').cursor();
 
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('All Users List');
+    const worksheet = workbook.addWorksheet('System All Users');
 
     worksheet.columns = [
-      { header: 'DATABASE ID', key: '_id', width: 30 },
-      { header: 'FIRST NAME', key: 'firstName', width: 15 },
-      { header: 'LAST NAME', key: 'lastName', width: 15 },
+      { header: 'ID', key: '_id', width: 25 },
       { header: 'FULL NAME', key: 'fullName', width: 25 },
       { header: 'EMAIL', key: 'email', width: 30 },
       { header: 'USERNAME', key: 'username', width: 20 },
       { header: 'ROLE', key: 'role', width: 12 },
-      { header: 'ACCOUNT STATUS', key: 'status', width: 15 },
+      { header: 'STATUS', key: 'status', width: 12 },
       { header: 'COUNTRY', key: 'country', width: 15 },
-      { header: 'CREATOR REQ STATUS', key: 'creatorStatus', width: 18 },
-      { header: 'JOINED DATE', key: 'createdAt', width: 20 },
+      { header: 'CREATOR STATUS', key: 'creatorStatus', width: 15 },
+      { header: 'JOIN DATE', key: 'createdAt', width: 20 },
     ];
 
     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -329,30 +327,31 @@ export const exportUsersExcel = async (req, res) => {
       fgColor: { argb: 'FFEA580C' },
     };
 
+    let count = 0;
+
     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
       const profile = user.profile || {};
       const creatorRequest = user.creatorRequest || {};
 
       worksheet.addRow({
         _id: user._id.toString(),
-        firstName: user.firstName || 'N/A',
-        lastName: user.lastName || 'N/A',
-        fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'No Name',
+        fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'N/A',
         email: user.email || 'N/A',
         username: user.username || 'N/A',
         role: (user.role || 'user').toUpperCase(),
         status: (user.status || 'active').toUpperCase(),
-        country: profile.country || 'Not Set',
+        country: profile.country || 'N/A',
         creatorStatus: creatorRequest.isApplied
           ? (creatorRequest.status || 'pending').toUpperCase()
-          : 'NOT APPLIED',
-        createdAt: user.createdAt
-          ? user.createdAt.toISOString().replace('T', ' ').split('.')[0]
-          : 'N/A',
+          : 'NO REQUEST',
+        createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : 'N/A',
       });
+      count++;
     }
 
-    const fileName = `Users_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+    console.log(`Exported ${count} users to Excel.`);
+
+    const fileName = `WCM_All_Users_${new Date().toISOString().split('T')[0]}.xlsx`;
 
     res.setHeader(
       'Content-Type',
@@ -363,12 +362,28 @@ export const exportUsersExcel = async (req, res) => {
     await workbook.xlsx.write(res);
     return res.status(200).end();
   } catch (error) {
-    console.error('CRITICAL EXPORT ERROR:', error);
-    if (!res.headersSent) {
-      return res.status(500).json({
-        message: 'Failed to generate excel report',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      });
-    }
+    console.error('EXPORT ERROR:', error);
+    if (!res.headersSent) res.status(500).send('Export failed');
+  }
+};
+
+export const getAdminStats = async (req, res) => {
+  try {
+    const [totalUsers, totalListings, pendingRequests] = await Promise.all([
+      User.countDocuments({ role: { $in: ['user', 'creator', 'admin'] } }),
+
+      Listing.countDocuments(),
+      User.countDocuments({ 'creatorRequest.status': 'pending' }),
+    ]);
+
+    console.log('Stats:', { totalUsers, totalListings, pendingRequests });
+
+    res.status(200).json({
+      totalUsers,
+      totalListings,
+      pendingRequests,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
