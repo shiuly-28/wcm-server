@@ -70,6 +70,14 @@ const listingSchema = new mongoose.Schema(
         ref: 'User',
       },
     ],
+    isPromoted: {
+      type: Boolean,
+      default: false,
+    },
+    views: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );

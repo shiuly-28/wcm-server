@@ -271,3 +271,28 @@ export const deleteUserAccount = async (req, res) => {
     res.status(500).json({ message: 'Internal server error during account deletion' });
   }
 };
+
+export const getPublicProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id)
+      .select('-password -email -isAdmin -creatorRequest.rejectionReason')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ message: 'User identity not found in node' });
+    }
+
+    const listingsCount = await Listing.countDocuments({
+      creatorId: req.params.id,
+      status: 'approved',
+    });
+
+    res.status(200).json({
+      user,
+      listingsCount,
+    });
+  } catch (error) {
+    console.error('Public Profile Error:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};

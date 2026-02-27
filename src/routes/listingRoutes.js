@@ -8,23 +8,37 @@ import {
   getPublicListings,
   toggleFavorite,
   getCategoriesAndTags,
+  getListingById,
+  getCreatorListingCount,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles, optionalAuth } from '../middlewares/auth.js';
 
 const router = express.Router();
 
 router.get('/public', optionalAuth, getPublicListings);
-
-router.use(authMiddleware);
-
-router.post('/favorite/:id', toggleFavorite);
 router.get('/meta-data', getCategoriesAndTags);
 
-router.use(authorizeRoles('creator'));
+router.get('/count/:creatorId', getCreatorListingCount);
 
-router.post('/add', upload.single('image'), createListing);
-router.put('/update/:id', upload.single('image'), updateListing);
-router.get('/my-listings', getMyListings);
-router.delete('/delete/:id', deleteListing);
+router.post('/favorite/:id', authMiddleware, toggleFavorite);
+
+router.get('/my-listings', authMiddleware, authorizeRoles('creator'), getMyListings);
+router.post(
+  '/add',
+  authMiddleware,
+  authorizeRoles('creator'),
+  upload.single('image'),
+  createListing
+);
+router.put(
+  '/update/:id',
+  authMiddleware,
+  authorizeRoles('creator'),
+  upload.single('image'),
+  updateListing
+);
+router.delete('/delete/:id', authMiddleware, authorizeRoles('creator'), deleteListing);
+
+router.get('/:id', optionalAuth, getListingById);
 
 export default router;

@@ -9,6 +9,7 @@ import {
   updateUserProfile,
   updateCreatorProfile,
   deleteUserAccount,
+  getPublicProfile,
 } from '../controllers/userController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 
@@ -20,6 +21,7 @@ router.post('/logout', logoutUser);
 router.delete('/delete-account', authMiddleware, deleteUserAccount);
 
 router.get('/me', authMiddleware, getMyProfile);
+router.get('/profile/:id', getPublicProfile);
 
 router.put(
   '/update-profile',
