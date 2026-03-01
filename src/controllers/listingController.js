@@ -5,6 +5,7 @@ import Category from '../models/Category.js';
 import Tag from '../models/Tag.js';
 import mongoose from 'mongoose';
 const clickCooldowns = new Map();
+const viewCache = new Map();
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
@@ -456,11 +457,28 @@ export const getCreatorListingCount = async (req, res) => {
 export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const cacheKey = `${id}-${clientIp}`;
 
-    const listing = await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } }, { new: true })
-      .populate('creatorId', 'username firstName lastName profile email')
-      .populate('category', 'title')
-      .populate('culturalTags', 'title image');
+    let listing;
+
+    const lastViewed = viewCache.get(cacheKey);
+    const now = Date.now();
+    const cooldown = 24 * 60 * 60 * 1000;
+
+    if (!lastViewed || now - lastViewed > cooldown) {
+      listing = await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } }, { new: true })
+        .populate('creatorId', 'username firstName lastName profile email')
+        .populate('category', 'title')
+        .populate('culturalTags', 'title image');
+
+      viewCache.set(cacheKey, now);
+    } else {
+      listing = await Listing.findById(id)
+        .populate('creatorId', 'username firstName lastName profile email')
+        .populate('category', 'title')
+        .populate('culturalTags', 'title image');
+    }
 
     if (!listing) {
       return res.status(404).json({ message: 'Listing not found' });
