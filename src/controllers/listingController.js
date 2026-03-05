@@ -11,67 +11,6 @@ import Analytics from '../models/Analytics.js';
 const clickCooldowns = new Map();
 const viewCache = new Map();
 
-// export const getCategoriesAndTags = async (req, res) => {
-//   try {
-//     const categories = await Category.find().sort({ order: 1 });
-
-//     const limit = parseInt(req.query.limit) || 10;
-//     const page = parseInt(req.query.page) || 1;
-//     const skip = (page - 1) * limit;
-
-//     const tagsWithCount = await Tag.aggregate([
-//       { $sort: { title: 1 } },
-//       { $skip: skip },
-//       { $limit: limit },
-//       {
-//         $lookup: {
-//           from: 'listings',
-//           localField: '_id',
-//           foreignField: 'culturalTags',
-//           as: 'matchedListings',
-//         },
-//       },
-//       {
-//         $project: {
-//           _id: 1,
-//           title: 1,
-//           image: 1,
-//           listingCount: {
-//             $size: {
-//               $filter: {
-//                 input: '$matchedListings',
-//                 as: 'listing',
-//                 cond: { $eq: ['$$listing.status', 'approved'] },
-//               },
-//             },
-//           },
-//         },
-//       },
-//     ]);
-
-//     const totalTags = await Tag.countDocuments();
-
-//     res.status(200).json({
-//       success: true,
-//       categories: categories || [],
-//       tags: tagsWithCount || [],
-//       pagination: {
-//         totalTags,
-//         currentPage: page,
-//         totalPages: Math.ceil(totalTags / limit),
-//         hasMore: page * limit < totalTags,
-//       },
-//     });
-//   } catch (error) {
-//     console.error('Meta Data Error:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Error fetching meta data',
-//       error: error.message,
-//     });
-//   }
-// };
-
 export const getCategoriesAndTags = async (req, res) => {
   try {
     const [categories, regions] = await Promise.all([
@@ -312,14 +251,10 @@ export const getPublicListings = async (req, res) => {
 
     if (search) {
       const [matchingTags, matchingCategories] = await Promise.all([
-        mongoose
-          .model('Tag')
-          .find({ title: { $regex: search, $options: 'i' } })
+        Tag.find({ title: { $regex: search, $options: 'i' } })
           .select('_id')
           .lean(),
-        mongoose
-          .model('Category')
-          .find({ title: { $regex: search, $options: 'i' } })
+        Category.find({ title: { $regex: search, $options: 'i' } })
           .select('_id')
           .lean(),
       ]);
@@ -328,8 +263,10 @@ export const getPublicListings = async (req, res) => {
       const catIds = matchingCategories.map((c) => c._id);
 
       query.$or = [
-        { $text: { $search: search } },
-
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { country: { $regex: search, $options: 'i' } },
+        { region: { $regex: search, $options: 'i' } },
         { culturalTags: { $in: tagIds } },
         { category: { $in: catIds } },
       ];
