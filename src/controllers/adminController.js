@@ -386,6 +386,137 @@ export const exportUsersExcel = async (req, res) => {
   }
 };
 
+// export const getAdminStats = async (req, res) => {
+//   try {
+//     const sevenDaysAgo = new Date();
+//     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+//     const now = new Date();
+
+//     const [
+//       totalUsers, 
+//       totalCreators, 
+//       totalListings, 
+//       pendingListings,
+//       pendingRequests,
+//       transactions,
+//       activePpcCampaigns,
+//       activeBoostCampaigns
+//     ] = await Promise.all([
+//       User.countDocuments({ role: 'user' }),
+//       User.countDocuments({ role: 'creator' }),
+//       Listing.countDocuments(),
+//       Listing.countDocuments({ status: 'pending' }),
+//       User.countDocuments({ 'creatorRequest.status': 'pending', 'creatorRequest.isApplied': true }),
+//       Transaction.find({ status: 'completed' }),
+//       Listing.countDocuments({ 
+//         'promotion.ppc.isActive': true, 
+//         'promotion.ppc.ppcBalance': { $gt: 0 } 
+//       }),
+//       Listing.countDocuments({ 
+//         'promotion.boost.isActive': true, 
+//         'promotion.boost.expiresAt': { $gt: now } 
+//       }),
+//     ]);
+
+//     const totalRevenue = transactions.reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
+//     const ppcRevenue = transactions
+//       .filter(t => t.packageType === 'ppc')
+//       .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
+//     const boostRevenue = transactions
+//       .filter(t => t.packageType === 'boost')
+//       .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
+
+//     const categoryDist = await Listing.aggregate([
+//       {
+//         $group: {
+//           _id: "$category",
+//           value: { $sum: 1 }
+//         }
+//       },
+//       {
+//         $lookup: {
+//           from: "categories", 
+//           localField: "_id",
+//           foreignField: "_id",
+//           as: "catDetails"
+//         }
+//       },
+//       { $unwind: "$catDetails" },
+//       {
+//         $project: {
+//           _id: 0,
+//           name: "$catDetails.title",
+//           value: 1
+//         }
+//       }
+//     ]);
+
+//     const dailyStats = await Transaction.aggregate([
+//       { $match: { createdAt: { $gte: sevenDaysAgo }, status: 'completed' } },
+//       {
+//         $group: {
+//           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+//           revenue: { $sum: "$amountPaid" }
+//         }
+//       },
+//       { $sort: { "_id": 1 } }
+//     ]);
+
+//     const userGrowth = await User.aggregate([
+//       { $match: { createdAt: { $gte: sevenDaysAgo } } },
+//       {
+//         $group: {
+//           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+//           newUsers: { $sum: 1 }
+//         }
+//       },
+//       { $sort: { "_id": 1 } }
+//     ]);
+
+//     const topPromotedListings = await Listing.find({ isPromoted: true })
+//       .sort({ 'promotion.level': -1 })
+//       .limit(5)
+//       .select('title promotion.level promotion.ppc.isActive promotion.boost.isActive')
+//       .lean();
+
+//     res.status(200).json({
+//       success: true,
+//       cards: {
+//         totalRevenue: totalRevenue.toFixed(2),
+//         ppcRevenue: ppcRevenue.toFixed(2),
+//         boostRevenue: boostRevenue.toFixed(2),
+//         totalUsers,
+//         totalCreators,
+//         totalListings,
+//         pendingListings,
+//         pendingRequests,
+//         activeCampaigns: activePpcCampaigns + activeBoostCampaigns,
+//         activePpc: activePpcCampaigns,
+//         activeBoost: activeBoostCampaigns
+//       },
+//       charts: {
+//         categories: categoryDist,
+//         revenueAndUsers: dailyStats.map(ds => {
+//           const userEntry = userGrowth.find(ug => ug._id === ds._id);
+//           return {
+//             date: ds._id,
+//             revenue: ds.revenue,
+//             users: userEntry ? userEntry.newUsers : 0
+//           };
+//         }),
+//         topPromoted: topPromotedListings.map(l => ({
+//           name: l.title.substring(0, 15) + '...',
+//           score: l.promotion.level,
+//           type: l.promotion.ppc?.isActive ? 'PPC' : 'Boost'
+//         }))
+//       }
+//     });
+//   } catch (error) {
+//     console.error('Admin Stats Error:', error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
+
 export const getAdminStats = async (req, res) => {
   try {
     const sevenDaysAgo = new Date();
@@ -393,14 +524,14 @@ export const getAdminStats = async (req, res) => {
     const now = new Date();
 
     const [
-      totalUsers, 
-      totalCreators, 
-      totalListings, 
+      totalUsers,
+      totalCreators,
+      totalListings,
       pendingListings,
       pendingRequests,
       transactions,
       activePpcCampaigns,
-      activeBoostCampaigns
+      activeBoostCampaigns,
     ] = await Promise.all([
       User.countDocuments({ role: 'user' }),
       User.countDocuments({ role: 'creator' }),
@@ -408,111 +539,104 @@ export const getAdminStats = async (req, res) => {
       Listing.countDocuments({ status: 'pending' }),
       User.countDocuments({ 'creatorRequest.status': 'pending', 'creatorRequest.isApplied': true }),
       Transaction.find({ status: 'completed' }),
-      Listing.countDocuments({ 
-        'promotion.ppc.isActive': true, 
-        'promotion.ppc.ppcBalance': { $gt: 0 } 
+      Listing.countDocuments({
+        'promotion.ppc.isActive': true,
+        'promotion.ppc.ppcBalance': { $gt: 0 },
       }),
-      Listing.countDocuments({ 
-        'promotion.boost.isActive': true, 
-        'promotion.boost.expiresAt': { $gt: now } 
+      Listing.countDocuments({
+        'promotion.boost.isActive': true,
+        'promotion.boost.expiresAt': { $gt: now },
       }),
     ]);
 
-    const totalRevenue = transactions.reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
+    // --- রেভিনিউ ও ফি ক্যালকুলেশন ---
+    let totalRevenue = 0;
+    let totalVat = 0;
+    let totalStripeFees = 0;
+
+    transactions.forEach((t) => {
+      const amount = t.amountPaid || 0;
+      totalRevenue += amount;
+      totalVat += t.vatAmount || 0;
+
+      // স্ট্রাইপ ফি ক্যালকুলেশন (Standard: 2.9% + 0.30)
+      // নোট: আপনার স্ট্রাইপ অ্যাকাউন্টের নির্দিষ্ট রেট অনুযায়ী এটি পরিবর্তন করতে পারেন
+      const fee = amount * 0.029 + 0.3;
+      totalStripeFees += fee;
+    });
+
+    const netRevenue = totalRevenue - totalVat; // ভ্যাট বাদে
+    const finalProfit = netRevenue - totalStripeFees; // ভ্যাট এবং স্ট্রাইপ ফি দুইটাই বাদে (আসল লাভ)
+
+    // পিপিছি এবং বুস্ট রেভিনিউ আলাদা করা
     const ppcRevenue = transactions
-      .filter(t => t.packageType === 'ppc')
-      .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
-    const boostRevenue = transactions
-      .filter(t => t.packageType === 'boost')
+      .filter((t) => t.packageType === 'ppc')
       .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
 
+    const boostRevenue = transactions
+      .filter((t) => t.packageType === 'boost')
+      .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
+
+    // ক্যাটাগরি এবং গ্রোথ লজিক (আগের মতোই)
     const categoryDist = await Listing.aggregate([
-      {
-        $group: {
-          _id: "$category",
-          value: { $sum: 1 }
-        }
-      },
-      {
-        $lookup: {
-          from: "categories", 
-          localField: "_id",
-          foreignField: "_id",
-          as: "catDetails"
-        }
-      },
-      { $unwind: "$catDetails" },
-      {
-        $project: {
-          _id: 0,
-          name: "$catDetails.title",
-          value: 1
-        }
-      }
+      { $group: { _id: '$category', value: { $sum: 1 } } },
+      { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'catDetails' } },
+      { $unwind: '$catDetails' },
+      { $project: { _id: 0, name: '$catDetails.title', value: 1 } },
     ]);
 
     const dailyStats = await Transaction.aggregate([
       { $match: { createdAt: { $gte: sevenDaysAgo }, status: 'completed' } },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          revenue: { $sum: "$amountPaid" }
-        }
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          revenue: { $sum: '$amountPaid' },
+          vat: { $sum: '$vatAmount' },
+        },
       },
-      { $sort: { "_id": 1 } }
+      { $sort: { _id: 1 } },
     ]);
 
     const userGrowth = await User.aggregate([
       { $match: { createdAt: { $gte: sevenDaysAgo } } },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          newUsers: { $sum: 1 }
-        }
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          newUsers: { $sum: 1 },
+        },
       },
-      { $sort: { "_id": 1 } }
+      { $sort: { _id: 1 } },
     ]);
-
-    const topPromotedListings = await Listing.find({ isPromoted: true })
-      .sort({ 'promotion.level': -1 })
-      .limit(5)
-      .select('title promotion.level promotion.ppc.isActive promotion.boost.isActive')
-      .lean();
 
     res.status(200).json({
       success: true,
       cards: {
-        totalRevenue: totalRevenue.toFixed(2),
+        totalRevenue: totalRevenue.toFixed(2), // মোট টাকা (Gross)
+        totalVat: totalVat.toFixed(2), // মোট ভ্যাট (Tax)
+        stripeFees: totalStripeFees.toFixed(2), // স্ট্রাইপকে দেওয়া ফি
+        netProfit: finalProfit.toFixed(2), // আপনার পকেটে আসা আসল লাভ (Final)
         ppcRevenue: ppcRevenue.toFixed(2),
         boostRevenue: boostRevenue.toFixed(2),
         totalUsers,
         totalCreators,
         totalListings,
-        pendingListings,
-        pendingRequests,
         activeCampaigns: activePpcCampaigns + activeBoostCampaigns,
-        activePpc: activePpcCampaigns,
-        activeBoost: activeBoostCampaigns
       },
       charts: {
         categories: categoryDist,
-        revenueAndUsers: dailyStats.map(ds => {
-          const userEntry = userGrowth.find(ug => ug._id === ds._id);
+        revenueAndUsers: dailyStats.map((ds) => {
+          const userEntry = userGrowth.find((ug) => ug._id === ds._id);
+          const dailyFee = ds.revenue * 0.029 + 0.3;
           return {
             date: ds._id,
-            revenue: ds.revenue,
-            users: userEntry ? userEntry.newUsers : 0
+            revenue: ds.revenue.toFixed(2),
+            profit: (ds.revenue - ds.vat - dailyFee).toFixed(2), // ডেইলি নিট প্রফিট
+            users: userEntry ? userEntry.newUsers : 0,
           };
         }),
-        topPromoted: topPromotedListings.map(l => ({
-          name: l.title.substring(0, 15) + '...',
-          score: l.promotion.level,
-          type: l.promotion.ppc?.isActive ? 'PPC' : 'Boost'
-        }))
-      }
+      },
     });
   } catch (error) {
-    console.error('Admin Stats Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
