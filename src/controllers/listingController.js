@@ -321,151 +321,52 @@ export const getPublicListings = async (req, res) => {
   }
 };
 
-// const clickCooldowns = new Map();
-// const viewCache = new Map();
-
-// export const handlePpcClick = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const userIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-
-//     const listing = await Listing.findById(id);
-//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-//     // ১. চেক: পিপিছি একটিভ আছে কি না
-//     if (!listing.promotion.ppc.isActive || listing.promotion.ppc.ppcBalance <= 0) {
-//       return res.status(200).json({ success: true, message: 'Organic click, no deduction.' });
-//     }
-
-//     // ২. ২৪ ঘণ্টা রেস্ট্রিকশন চেক (Analytics মডেল ব্যবহার করে)
-//     const now = new Date();
-//     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-//     // আমরা এনালাইটিক্স মডেলে চেক করবো এই IP থেকে গত ২৪ ঘণ্টায় কোনো ক্লিক হয়েছে কি না
-//     // এর জন্য এনালাইটিক্স মডেলে 'userIp' ফিল্ডটি থাকলে ভালো হয়, নাহলে আমরা ডেট দিয়ে চেক করছি
-//     const today = new Date();
-//     today.setHours(0, 0, 0, 0);
-
-//     // লজিক: একই লিস্টিং এ ২৪ ঘণ্টার মধ্যে ডাবল ক্লিক ডিডাকশন হবে না
-//     // এখানে আমরা চেক করছি যদি অলরেডি ক্লিক কাউন্ট হয়ে থাকে তবে শুধু রিটার্ন করবে
-//     // (প্রফেশনাল সিস্টেমে এখানে IP Log টেবিল লাগে, আমরা Analytics দিয়ে ম্যানেজ করছি)
-
-//     const stats = await Analytics.findOneAndUpdate(
-//       { listingId: id, date: today },
-//       { $setOnInsert: { creatorId: listing.creatorId, listingId: id, date: today } },
-//       { upsert: true, new: true }
-//     );
-
-//     // যদি ব্যালেন্স থাকে তবেই টাকা কাটবো
-//     const cost = listing.promotion.ppc.costPerClick || 0.1;
-
-//     if (listing.promotion.ppc.ppcBalance >= cost) {
-//       listing.promotion.ppc.ppcBalance = Number(
-//         (listing.promotion.ppc.ppcBalance - cost).toFixed(2)
-//       );
-//       listing.promotion.ppc.executedClicks += 1;
-
-//       // এনালাইটিক্স আপডেট
-//       stats.clicks += 1;
-//       await stats.save();
-
-//       // যদি ব্যালেন্স ০ হয়ে যায় তবে ক্যাম্পেইন অফ করে দাও
-//       if (listing.promotion.ppc.ppcBalance <= 0) {
-//         listing.promotion.ppc.isActive = false;
-//         listing.isPromoted = listing.promotion.boost.isActive;
-//       }
-
-//       await listing.save();
-//       return res.status(200).json({ success: true, balance: listing.promotion.ppc.ppcBalance });
-//     }
-
-//     res.status(200).json({ success: true, message: 'Insufficient balance for deduction.' });
-//   } catch (error) {
-//     console.error('PPC Click Error:', error);
-//     res.status(500).json({ message: 'Internal server error' });
-//   }
-// };
-
-// export const getListingById = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const userIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-
-//     const listing = await Listing.findById(id)
-//       .populate('creatorId', 'firstName lastName username profile.image')
-//       .populate('category', 'title')
-//       .populate('culturalTags', 'title image');
-
-//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-//     // View Tracking with simple IP-based cooldown
-//     const today = new Date();
-//     today.setHours(0, 0, 0, 0);
-
-//     listing.views += 1;
-//     await listing.save();
-
-//     res.status(200).json(listing);
-//   } catch (error) {
-//     res.status(500).json({ message: error.message });
-//   }
-// };
+// --- IP Helper ---
+const getClientIp = (req) => {
+  return req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || req.ip;
+};
 
 export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
-    // ইউজারের আইপি এড্রেস বের করা (প্রক্সি থাকলে x-forwarded-for চেক করবে)
-    const userIp = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const userIp = getClientIp(req);
 
-    // ১. লিস্টিং ডাটা পপুলেট করা (সবগুলো প্রয়োজনীয় রেফারেন্সসহ)
     const listing = await Listing.findById(id)
-      .populate('creatorId', 'firstName lastName username profile.image')
+      .populate('creatorId', 'firstName lastName username profile.profileImage')
       .populate('category', 'title')
-      .populate('culturalTags', 'title image'); // টাইটেল এবং ইমেজ পপুলেট করা হলো
+      .populate('culturalTags', 'title image');
 
-    if (!listing) {
-      return res.status(404).json({ success: false, message: 'Listing not found' });
-    }
+    if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
-    // ২. ২৪ ঘণ্টা ভিউ চেক (স্প্যাম প্রিভেনশন)
-    // InteractionLog কালেকশনে চেক করা হচ্ছে এই আইপি থেকে লাস্ট ২৪ ঘণ্টায় ভিউ হয়েছে কি না
     const alreadyViewed = await InteractionLog.findOne({
       listingId: id,
       ip: userIp,
       type: 'view',
-      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // লাস্ট ২৪ ঘণ্টার চেক
     });
 
     if (!alreadyViewed) {
-      // ৩. লিস্টিং ডক-এ ভিউ সংখ্যা ১ বাড়ানো
-      listing.views = (listing.views || 0) + 1;
-      await listing.save();
+      await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } });
 
-      // ৪. নতুন একটি ইন্টারঅ্যাকশন লগ তৈরি করা
       await InteractionLog.create({
         listingId: id,
         ip: userIp,
         type: 'view',
       });
 
-      // ৫. ডেইলি এনালাইটিক্স আপডেট করা (গ্রাফ বা স্ট্যাটস দেখানোর জন্য)
       const today = new Date();
-      today.setHours(0, 0, 0, 0); // দিনের শুরু নির্ধারণ
-
+      today.setHours(0, 0, 0, 0);
       await Analytics.findOneAndUpdate(
         { listingId: id, date: today },
         {
           $inc: { views: 1 },
           $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
         },
-        { upsert: true, new: true }
+        { upsert: true }
       );
     }
 
-    // সবশেষে সম্পূর্ণ লিস্টিং ডাটা রেসপন্স হিসেবে পাঠানো
     res.status(200).json(listing);
   } catch (error) {
-    console.error('Get Listing Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -473,17 +374,15 @@ export const getListingById = async (req, res) => {
 export const handlePpcClick = async (req, res) => {
   try {
     const { id } = req.params;
-    const userIp = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const userIp = getClientIp(req);
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
-    // পিপিছি একটিভ চেক
-    if (!listing.promotion.ppc.isActive || listing.promotion.ppc.ppcBalance <= 0) {
-      return res.status(200).json({ message: 'Organic click.' });
+    if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
+      return res.status(200).json({ success: true, message: 'Organic click.' });
     }
 
-    // ২৪ ঘণ্টা ক্লিক চেক (একই আইপি থেকে ২৪ ঘণ্টায় একবারই টাকা কাটবে)
     const alreadyClicked = await InteractionLog.findOne({
       listingId: id,
       ip: userIp,
@@ -491,28 +390,27 @@ export const handlePpcClick = async (req, res) => {
     });
 
     if (alreadyClicked) {
-      return res.status(200).json({ message: 'Click already recorded for today.' });
+      return res.status(200).json({ message: 'Click already recorded.' });
     }
 
     const cost = listing.promotion.ppc.costPerClick || 0.1;
 
     if (listing.promotion.ppc.ppcBalance >= cost) {
-      // টাকা কাটা এবং ক্লিক কাউন্ট বাড়ানো
       listing.promotion.ppc.ppcBalance = Number(
-        (listing.promotion.ppc.ppcBalance - cost).toFixed(2)
+        (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
       );
       listing.promotion.ppc.executedClicks += 1;
 
-      // যদি ব্যালেন্স শেষ হয়ে যায়
-      if (listing.promotion.ppc.ppcBalance <= 0) {
+      if (listing.promotion.ppc.ppcBalance < 0.01) {
         listing.promotion.ppc.isActive = false;
-        listing.isPromoted =
-          listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > new Date();
+        const now = new Date();
+        const hasBoost =
+          listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
+        listing.isPromoted = hasBoost;
       }
 
       await listing.save();
 
-      // লগ এবং এনালাইটিক্স আপডেট
       await InteractionLog.create({ listingId: id, ip: userIp, type: 'ppc_click' });
 
       const today = new Date();
@@ -526,7 +424,7 @@ export const handlePpcClick = async (req, res) => {
       return res.status(200).json({ success: true, balance: listing.promotion.ppc.ppcBalance });
     }
 
-    res.status(400).json({ message: 'Insufficient balance.' });
+    res.status(400).json({ message: 'Insufficient PPC balance.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

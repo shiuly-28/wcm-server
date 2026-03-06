@@ -3,7 +3,7 @@ import {
   createCheckoutSession,
   generateInvoice,
   handleStripeWebhook,
-  payWithWallet,
+  // payWithWallet,
 } from '../controllers/PaymentController.js';
 import { authMiddleware } from '../middlewares/auth.js';
 
@@ -15,6 +15,6 @@ router.post('/create-checkout-session', express.json(), authMiddleware, createCh
 
 router.get('/creator/invoice/:id', authMiddleware, generateInvoice);
 
-router.post('/pay-with-wallet', authMiddleware, payWithWallet);
+// router.post('/pay-with-wallet', authMiddleware, payWithWallet);
 
 export default router;

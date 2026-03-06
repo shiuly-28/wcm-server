@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import Stripe from 'stripe';
+import axios from 'axios';
 import Transaction from '../models/Transaction.js';
 import Listing from '../models/Listing.js';
 import User from '../models/User.js';
@@ -8,13 +9,34 @@ import autoTable from 'jspdf-autotable';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+// --- Real-time Exchange Rate Helper ---
+const getExchangeRate = async (fromCurrency, toCurrency) => {
+  try {
+    const from = fromCurrency.toLowerCase();
+    const to = toCurrency.toLowerCase();
+    if (from === to) return 1;
+
+    const response = await axios.get(
+      `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_RATE_API_KEY}/pair/${from}/${to}`
+    );
+
+    if (response.data && response.data.conversion_rate) {
+      return response.data.conversion_rate;
+    }
+    return 1;
+  } catch (error) {
+    console.error('Exchange Rate Error:', error.message);
+    return 1;
+  }
+};
+
 // --- Ranking & Promotion Logic ---
 const applyPromotionLogic = (listing) => {
   let boostScore = 0;
   let ppcScore = 0;
   const now = new Date();
 
-  // ১. Viral Boost Calculation
+  // ১. Viral Boost Calculation (Based on EUR value)
   if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
     const amount = listing.promotion.boost.amountPaid || 0;
     const expiry = new Date(listing.promotion.boost.expiresAt);
@@ -23,7 +45,7 @@ const applyPromotionLogic = (listing) => {
     boostScore = (amount / daysLeft) * 10;
   }
 
-  // ২. PPC Logic
+  // ২. PPC Logic (Based on converted CPC)
   if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
     const cpc = listing.promotion.ppc.costPerClick || 0.1;
     ppcScore = cpc * 150;
@@ -42,7 +64,7 @@ const applyPromotionLogic = (listing) => {
   return listing;
 };
 
-// --- Create Checkout Session (With Double Payment Check) ---
+// --- Create Checkout Session ---
 export const createCheckoutSession = async (req, res) => {
   try {
     const { listingId, packageType, amount, currency, currentPath, days, totalClicks } = req.body;
@@ -50,38 +72,21 @@ export const createCheckoutSession = async (req, res) => {
     const listing = await Listing.findById(listingId);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
-    const now = new Date();
-    const isBoostActive =
-      listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
-    const isPpcActive = listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0;
-
-    // If the user tries to buy a boost while one is active, or tries to buy PPC while they still have balance, prevent it.
-    if (packageType === 'boost' && isBoostActive) {
-      return res.status(400).json({ message: 'A Viral Boost is already active on this listing.' });
-    }
-
-    // If PPC is active and user tries to buy more clicks, prevent it until balance is exhausted. This encourages users to use up their existing balance before purchasing more.
-    if (packageType === 'ppc' && isPpcActive) {
-      return res
-        .status(400)
-        .json({ message: 'Current PPC balance must be exhausted before purchasing more clicks.' });
-    }
-
+    // CPC ক্যালকুলেশন (পেমেন্ট কারেন্সিতে)
+    const paymentCurrency = currency || 'eur';
     const calculatedCPC =
-      packageType === 'ppc' ? (Number(amount) / Number(totalClicks)).toFixed(2) : 0;
+      packageType === 'ppc' ? (Number(amount) / Number(totalClicks)).toFixed(4) : 0;
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
         {
           price_data: {
-            currency: currency || 'eur',
+            currency: paymentCurrency,
             product_data: {
               name: `${packageType.toUpperCase()} Promotion: ${listing.title}`,
               description:
-                packageType === 'boost'
-                  ? `Validity: ${days} days`
-                  : `Credit for ${totalClicks} clicks`,
+                packageType === 'boost' ? `${days} Days Boost` : `${totalClicks} Clicks Credit`,
             },
             unit_amount: Math.round(Number(amount) * 100),
           },
@@ -96,7 +101,7 @@ export const createCheckoutSession = async (req, res) => {
         packageType,
         days: days ? days.toString() : '0',
         totalClicks: totalClicks ? totalClicks.toString() : '0',
-        costPerClick: calculatedCPC.toString(),
+        originalCpc: calculatedCPC.toString(), // পেমেন্ট কারেন্সিতে CPC
         creatorId: req.user._id.toString(),
       },
     });
@@ -104,11 +109,11 @@ export const createCheckoutSession = async (req, res) => {
     res.status(200).json({ url: session.url });
   } catch (error) {
     console.error('Stripe Session Error:', error);
-    res.status(500).json({ message: 'Payment initialization failed.' });
+    res.status(500).json({ message: 'Payment failed' });
   }
 };
 
-// --- Webhook with Retry & Logic Updates ---
+// --- Webhook Handler (The Core Logic) ---
 export const handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -121,292 +126,135 @@ export const handleStripeWebhook = async (req, res) => {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const { listingId, packageType, creatorId, days, totalClicks, costPerClick } = session.metadata;
+    const { listingId, packageType, creatorId, days, totalClicks, originalCpc } = session.metadata;
 
-    let retries = 3;
-    while (retries > 0) {
-      const dbSession = await mongoose.startSession();
-      dbSession.startTransaction();
-      try {
-        const amountPaid = session.amount_total / 100;
-        const fxRate = session.currency === 'usd' ? 0.92 : 1;
-        const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
+    const dbSession = await mongoose.startSession();
+    dbSession.startTransaction();
 
-        // Transaction record create
-        await Transaction.create(
-          [
-            {
-              creator: creatorId,
-              listing: listingId,
-              stripeSessionId: session.id,
-              amountPaid,
-              currency: session.currency,
-              fxRate,
-              amountInEUR,
-              packageType,
-              status: 'completed',
-              invoiceNumber: `INV-${Date.now()}`,
-            },
-          ],
-          { session: dbSession }
+    try {
+      const amountPaid = session.amount_total / 100;
+      const paymentCurrency = session.currency.toUpperCase();
+      const targetCurrency = process.env.INTERNAL_CURRENCY || 'EUR';
+
+      // ১. রিয়েল-টাইম এক্সচেঞ্জ রেট আনা
+      const fxRate = await getExchangeRate(paymentCurrency, targetCurrency);
+      const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
+
+      // ২. ভ্যাট ক্যালকুলেশন (শুধুমাত্র হিসাবের জন্য, টোটাল অ্যামাউন্ট থেকে আলাদা করা)
+      const vatRate = parseFloat(process.env.DEFAULT_VAT_RATE) || 19;
+      const vatAmountInEUR = Number((amountInEUR - amountInEUR / (1 + vatRate / 100)).toFixed(2));
+
+      // ৩. ট্রানজেকশন রেকর্ড
+      await Transaction.create(
+        [
+          {
+            creator: creatorId,
+            listing: listingId,
+            stripeSessionId: session.id,
+            amountPaid,
+            currency: session.currency,
+            fxRate,
+            amountInEUR,
+            packageType,
+            status: 'completed',
+            invoiceNumber: `INV-${Date.now()}`,
+            vatAmount: vatAmountInEUR,
+          },
+        ],
+        { session: dbSession }
+      );
+
+      // ৪. লিস্টিং আপডেট
+      const listing = await Listing.findById(listingId).session(dbSession);
+      if (!listing) throw new Error('Listing not found');
+
+      if (packageType === 'boost') {
+        listing.promotion.boost.isActive = true;
+        listing.promotion.boost.amountPaid = amountInEUR;
+        const expiry = new Date();
+        expiry.setDate(expiry.getDate() + parseInt(days));
+        listing.promotion.boost.expiresAt = expiry;
+      } else if (packageType === 'ppc') {
+        listing.promotion.ppc.isActive = true;
+        listing.promotion.ppc.ppcBalance = Number(
+          ((listing.promotion.ppc.ppcBalance || 0) + amountInEUR).toFixed(2)
         );
+        listing.promotion.ppc.amountPaid = Number(
+          ((listing.promotion.ppc.amountPaid || 0) + amountInEUR).toFixed(2)
+        );
+        listing.promotion.ppc.totalClicks =
+          (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
 
-        // Update Listing Promotion
-        const listing = await Listing.findById(listingId).session(dbSession);
-        if (!listing) throw new Error('Listing not found');
-
-        if (packageType === 'boost') {
-          listing.promotion.boost.isActive = true;
-          listing.promotion.boost.amountPaid = amountInEUR;
-          const expiry = new Date();
-          expiry.setDate(expiry.getDate() + parseInt(days));
-          listing.promotion.boost.expiresAt = expiry;
-        } else if (packageType === 'ppc') {
-          listing.promotion.ppc.isActive = true;
-          listing.promotion.ppc.ppcBalance = Number(
-            ((listing.promotion.ppc.ppcBalance || 0) + amountInEUR).toFixed(2)
-          );
-          listing.promotion.ppc.amountPaid = (listing.promotion.ppc.amountPaid || 0) + amountInEUR;
-          listing.promotion.ppc.costPerClick = Number(costPerClick);
-
-          listing.promotion.ppc.totalClicks =
-            (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
-
-        }
-
-        // Re-apply promotion logic to update listing's promoted status and level
-        applyPromotionLogic(listing);
-
-        await listing.save({ session: dbSession });
-        await dbSession.commitTransaction();
-        console.log(`Successfully processed ${packageType} for listing ${listingId}`);
-        break;
-      } catch (error) {
-        await dbSession.abortTransaction();
-        retries--;
-        if (error.code === 112 && retries > 0) {
-          await new Promise((res) => setTimeout(res, 500));
-        } else {
-          console.error('Webhook processing failed:', error);
-          break;
-        }
-      } finally {
-        dbSession.endSession();
+        // CPC-কেও EUR-তে কনভার্ট করা হলো
+        const cpcInEUR = Number((Number(originalCpc) * fxRate).toFixed(4));
+        listing.promotion.ppc.costPerClick = cpcInEUR;
       }
+
+      applyPromotionLogic(listing);
+      await listing.save({ session: dbSession });
+
+      await dbSession.commitTransaction();
+      console.log(`Success: Converted ${amountPaid} ${paymentCurrency} to ${amountInEUR} EUR`);
+    } catch (error) {
+      await dbSession.abortTransaction();
+      console.error('Webhook Error:', error);
+    } finally {
+      dbSession.endSession();
     }
   }
   res.json({ received: true });
 };
 
-// --- Wallet Payment (Fixed fxRate Bug) ---
-export const payWithWallet = async (req, res) => {
-  const dbSession = await mongoose.startSession();
-  dbSession.startTransaction();
-  try {
-    const { listingId, packageType, amount, days, totalClicks } = req.body;
-    const userId = req.user._id;
-
-    const listing = await Listing.findById(listingId).session(dbSession);
-    if (
-      packageType === 'boost' &&
-      listing.promotion.boost.isActive &&
-      listing.promotion.boost.expiresAt > new Date()
-    ) {
-      throw new Error('Listing already has an active Viral Boost.');
-    }
-
-    const user = await User.findById(userId).session(dbSession);
-    if (!user || user.walletBalance < amount) throw new Error('Insufficient wallet balance.');
-
-    user.walletBalance = Number((user.walletBalance - amount).toFixed(2));
-    await user.save({ session: dbSession });
-
-    const amountNum = Number(amount);
-
-    await Transaction.create(
-      [
-        {
-          creator: userId,
-          listing: listingId,
-          stripeSessionId: `WALLET-${Date.now()}`,
-          amountPaid: amountNum,
-          currency: 'eur',
-          fxRate: 1, // 🔹 Wallet is 1:1 EUR
-          amountInEUR: amountNum,
-          packageType,
-          status: 'completed',
-          invoiceNumber: `INV-W-${Date.now()}`,
-        },
-      ],
-      { session: dbSession }
-    );
-
-    if (packageType === 'boost') {
-      listing.promotion.boost.isActive = true;
-      listing.promotion.boost.amountPaid = amountNum;
-      const expiry = new Date();
-      expiry.setDate(expiry.getDate() + parseInt(days));
-      listing.promotion.boost.expiresAt = expiry;
-    } else {
-      listing.promotion.ppc.isActive = true;
-      listing.promotion.ppc.ppcBalance = Number(
-        ((listing.promotion.ppc.ppcBalance || 0) + amountNum).toFixed(2)
-      );
-      listing.promotion.ppc.amountPaid = (listing.promotion.ppc.amountPaid || 0) + amountNum;
-      listing.promotion.ppc.costPerClick = Number((amountNum / parseInt(totalClicks)).toFixed(2));
-      listing.promotion.ppc.totalClicks =
-        (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
-    }
-
-    applyPromotionLogic(listing);
-    await listing.save({ session: dbSession });
-    await dbSession.commitTransaction();
-    res.status(200).json({ success: true, message: 'Promotion activated!' });
-  } catch (error) {
-    await dbSession.abortTransaction();
-    res.status(400).json({ message: error.message });
-  } finally {
-    dbSession.endSession();
-  }
-};
-
+// --- Generate Invoice ---
 export const generateInvoice = async (req, res) => {
   try {
     const { id } = req.params;
-
-    const BUSINESS_NAME = process.env.BUSINESS_NAME || 'World Culture Marketplace';
-    const BUSINESS_ADDRESS = process.env.BUSINESS_ADDRESS || '123 Culture Street, Berlin, Germany';
-    const BUSINESS_VAT_NUMBER = process.env.BUSINESS_VAT_NUMBER || 'DE123456789';
-    const DEFAULT_VAT_RATE = process.env.DEFAULT_VAT_RATE || 19;
-
-    const transaction = await Transaction.findById(id)
-      .populate('creator', 'firstName lastName email')
-      .populate('listing', 'title');
-
-    if (!transaction) {
-      return res.status(404).json({ message: 'Transaction record not found' });
-    }
+    const transaction = await Transaction.findById(id).populate('creator').populate('listing');
+    if (!transaction) return res.status(404).send('Invoice not found');
 
     const doc = new jsPDF();
-    const brandOrange = [249, 115, 22];
+    const vatRate = parseFloat(process.env.DEFAULT_VAT_RATE) || 19;
 
-    // --- Header ---
-    doc.setFillColor(...brandOrange);
+    // পেমেন্ট করা অরিজিনাল কারেন্সিতে ভ্যাট হিসাব
+    const netAmount = transaction.amountPaid / (1 + vatRate / 100);
+    const vatValue = transaction.amountPaid - netAmount;
+
+    // Header Design
+    doc.setFillColor(249, 115, 22);
     doc.rect(0, 0, 210, 40, 'F');
-
-    doc.setFontSize(24);
     doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.text('INVOICE', 14, 25);
+    doc.setFontSize(22);
+    doc.text('OFFICIAL INVOICE', 15, 25);
 
-    // --- Meta Info ---
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    const invNo =
-      transaction.invoiceNumber || `INV-${transaction._id.toString().slice(-6).toUpperCase()}`;
-    doc.text(`Invoice Number: ${invNo}`, 145, 18);
-    doc.text(`Date Issued: ${new Date(transaction.createdAt).toLocaleDateString()}`, 145, 24);
-    doc.text(`Payment Status: PAID`, 145, 30);
-
-    // --- Business & Client Details ---
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(10);
+    doc.text(`Invoice: ${transaction.invoiceNumber}`, 15, 50);
+    doc.text(`Date: ${new Date(transaction.createdAt).toLocaleDateString()}`, 15, 55);
 
-    // Company Side
     doc.setFont('helvetica', 'bold');
-    doc.text('FROM:', 14, 50);
+    doc.text('Bill To:', 140, 50);
     doc.setFont('helvetica', 'normal');
-    doc.text(BUSINESS_NAME, 14, 56);
-    doc.text(BUSINESS_ADDRESS, 14, 62);
-    doc.text(`VAT: ${BUSINESS_VAT_NUMBER}`, 14, 68);
+    doc.text(`${transaction.creator.firstName} ${transaction.creator.lastName}`, 140, 55);
+    doc.text(transaction.creator.email, 140, 60);
 
-    // Client Side
-    doc.setFont('helvetica', 'bold');
-    doc.text('BILL TO:', 120, 50);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`${transaction.creator?.firstName} ${transaction.creator?.lastName}`, 120, 56);
-    doc.text(transaction.creator?.email || 'N/A', 120, 62);
-
-    // --- Calculations ---
-    const totalAmount = transaction.amountPaid || 0;
-    const netAmount = totalAmount / (1 + DEFAULT_VAT_RATE / 100);
-    const vatAmount = totalAmount - netAmount;
-
-    // --- Items Table ---
     autoTable(doc, {
-      startY: 80,
-      head: [['Service Description', 'Type', 'Net Amount', 'VAT', 'Total']],
+      startY: 70,
+      head: [['Service', 'Net', 'VAT', 'Total']],
       body: [
         [
-          `Promotion: ${transaction.listing?.title || 'Culture Asset'}`,
-          transaction.packageType.toUpperCase(),
+          `${transaction.packageType.toUpperCase()} - ${transaction.listing.title}`,
           `${transaction.currency.toUpperCase()} ${netAmount.toFixed(2)}`,
-          `${DEFAULT_VAT_RATE}%`,
-          `${transaction.currency.toUpperCase()} ${totalAmount.toFixed(2)}`,
+          `${vatRate}%`,
+          `${transaction.currency.toUpperCase()} ${transaction.amountPaid.toFixed(2)}`,
         ],
       ],
-      headStyles: {
-        fillColor: brandOrange,
-        textColor: [255, 255, 255],
-        fontStyle: 'bold',
-      },
-      styles: { fontSize: 9, cellPadding: 4 },
-      columnStyles: {
-        4: { halign: 'right', fontStyle: 'bold' },
-      },
+      headStyles: { fillColor: [249, 115, 22] },
     });
 
-    // --- Totals Summary ---
-    const finalY = doc.lastAutoTable.finalY + 10;
-
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text('Subtotal (Net):', 140, finalY);
-    doc.text(`${transaction.currency.toUpperCase()} ${netAmount.toFixed(2)}`, 196, finalY, {
-      align: 'right',
-    });
-
-    doc.text(`VAT (${DEFAULT_VAT_RATE}%):`, 140, finalY + 6);
-    doc.text(`${transaction.currency.toUpperCase()} ${vatAmount.toFixed(2)}`, 196, finalY + 6, {
-      align: 'right',
-    });
-
-    doc.setLineWidth(0.5);
-    doc.line(140, finalY + 10, 196, finalY + 10);
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.text('Total Paid:', 140, finalY + 18);
-    doc.text(`${transaction.currency.toUpperCase()} ${totalAmount.toFixed(2)}`, 196, finalY + 18, {
-      align: 'right',
-    });
-
-    // --- Footer ---
-    const pageHeight = doc.internal.pageSize.height;
-    doc.setFontSize(8);
-    doc.setFont('helvetica', 'italic');
-    doc.setTextColor(150, 150, 150);
-    doc.text(
-      'This is a computer-generated document. No signature is required.',
-      105,
-      pageHeight - 20,
-      { align: 'center' }
-    );
-    doc.text('Thank you for choosing World Culture Marketplace!', 105, pageHeight - 15, {
-      align: 'center',
-    });
-
-    // --- Finalize and Send ---
     const pdfBuffer = doc.output('arraybuffer');
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename=Invoice-${invNo}.pdf`);
     res.send(Buffer.from(pdfBuffer));
-  } catch (error) {
-    console.error('Invoice Generation Error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to generate invoice',
-      error: error.message,
-    });
+  } catch (err) {
+    res.status(500).send('Error generating PDF');
   }
 };
