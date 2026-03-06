@@ -414,42 +414,59 @@ export const getPublicListings = async (req, res) => {
 export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
+    // ইউজারের আইপি এড্রেস বের করা (প্রক্সি থাকলে x-forwarded-for চেক করবে)
     const userIp = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
+    // ১. লিস্টিং ডাটা পপুলেট করা (সবগুলো প্রয়োজনীয় রেফারেন্সসহ)
     const listing = await Listing.findById(id)
       .populate('creatorId', 'firstName lastName username profile.image')
-      .populate('category', 'title');
+      .populate('category', 'title')
+      .populate('culturalTags', 'title image'); // টাইটেল এবং ইমেজ পপুলেট করা হলো
 
-    if (!listing) return res.status(404).json({ message: 'Listing not found' });
+    if (!listing) {
+      return res.status(404).json({ success: false, message: 'Listing not found' });
+    }
 
-    // ২৪ ঘণ্টা ভিউ চেক
+    // ২. ২৪ ঘণ্টা ভিউ চেক (স্প্যাম প্রিভেনশন)
+    // InteractionLog কালেকশনে চেক করা হচ্ছে এই আইপি থেকে লাস্ট ২৪ ঘণ্টায় ভিউ হয়েছে কি না
     const alreadyViewed = await InteractionLog.findOne({
       listingId: id,
       ip: userIp,
       type: 'view',
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // লাস্ট ২৪ ঘণ্টার চেক
     });
 
     if (!alreadyViewed) {
-      // ডাটাবেসে ভিউ বাড়ানো
-      listing.views += 1;
+      // ৩. লিস্টিং ডক-এ ভিউ সংখ্যা ১ বাড়ানো
+      listing.views = (listing.views || 0) + 1;
       await listing.save();
 
-      // লগ তৈরি করা
-      await InteractionLog.create({ listingId: id, ip: userIp, type: 'view' });
+      // ৪. নতুন একটি ইন্টারঅ্যাকশন লগ তৈরি করা
+      await InteractionLog.create({
+        listingId: id,
+        ip: userIp,
+        type: 'view',
+      });
 
-      // এনালাইটিক্স আপডেট (Daily Stats)
+      // ৫. ডেইলি এনালাইটিক্স আপডেট করা (গ্রাফ বা স্ট্যাটস দেখানোর জন্য)
       const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      today.setHours(0, 0, 0, 0); // দিনের শুরু নির্ধারণ
+
       await Analytics.findOneAndUpdate(
         { listingId: id, date: today },
-        { $inc: { views: 1 }, $setOnInsert: { creatorId: listing.creatorId } },
-        { upsert: true }
+        {
+          $inc: { views: 1 },
+          $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+        },
+        { upsert: true, new: true }
       );
     }
 
+    // সবশেষে সম্পূর্ণ লিস্টিং ডাটা রেসপন্স হিসেবে পাঠানো
     res.status(200).json(listing);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Get Listing Error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
