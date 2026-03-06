@@ -30,39 +30,6 @@ const getExchangeRate = async (fromCurrency, toCurrency) => {
   }
 };
 
-// --- Ranking & Promotion Logic ---
-const applyPromotionLogic = (listing) => {
-  let boostScore = 0;
-  let ppcScore = 0;
-  const now = new Date();
-
-  // ১. Viral Boost Calculation (Based on EUR value)
-  if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
-    const amount = listing.promotion.boost.amountPaid || 0;
-    const expiry = new Date(listing.promotion.boost.expiresAt);
-    const diffTime = Math.abs(expiry - now);
-    const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
-    boostScore = (amount / daysLeft) * 10;
-  }
-
-  // ২. PPC Logic (Based on converted CPC)
-  if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
-    const cpc = listing.promotion.ppc.costPerClick || 0.1;
-    ppcScore = cpc * 150;
-  }
-
-  // ৩. Engagement Score
-  const engagementScore = (listing.views || 0) * 0.05 + (listing.favorites?.length || 0) * 1;
-
-  listing.promotion.level = Math.floor(boostScore + ppcScore + engagementScore);
-
-  const hasActivePpc = listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0;
-  const hasActiveBoost =
-    listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
-  listing.isPromoted = !!(hasActivePpc || hasActiveBoost);
-
-  return listing;
-};
 
 // --- Create Checkout Session ---
 export const createCheckoutSession = async (req, res) => {
@@ -112,97 +79,54 @@ export const createCheckoutSession = async (req, res) => {
   }
 };
 
-// --- Webhook Handler (The Core Logic) ---
-// export const handleStripeWebhook = async (req, res) => {
-//   const sig = req.headers['stripe-signature'];
-//   let event;
+// --- Ranking & Promotion Logic ---
+const applyPromotionLogic = (listing, daysInput = null) => {
+  let boostScore = 0;
+  let ppcScore = 0;
+  const now = new Date();
 
-//   try {
-//     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-//   } catch (err) {
-//     return res.status(400).send(`Webhook Error: ${err.message}`);
-//   }
+  // ১. Boost Intensity (টাকা / দিন)
+  // যত কম দিনে যত বেশি টাকা, লেভেল তত হাই হবে।
+  if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
+    const amount = listing.promotion.boost.amountPaid || 0;
+    const expiry = new Date(listing.promotion.boost.expiresAt);
 
-//   if (event.type === 'checkout.session.completed') {
-//     const session = event.data.object;
-//     const { listingId, packageType, creatorId, days, totalClicks, originalCpc } = session.metadata;
+    // দিন বের করা (যদি নতুন পেমেন্ট হয় তবে ইনপুট দিন ব্যবহার করবে, নাহলে বাকি দিন)
+    let daysDiff = daysInput;
+    if (!daysDiff) {
+      const diffTime = Math.abs(expiry - now);
+      daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+    }
 
-//     const dbSession = await mongoose.startSession();
-//     dbSession.startTransaction();
+    // লজিক: (টোটাল টাকা / দিন) * মাল্টিপ্লায়ার
+    boostScore = (amount / daysDiff) * 10;
+  }
 
-//     try {
-//       const amountPaid = session.amount_total / 100;
-//       const paymentCurrency = session.currency.toUpperCase();
-//       const targetCurrency = process.env.INTERNAL_CURRENCY || 'EUR';
+  // ২. PPC Priority (High CPC = High Level)
+  // এখানে CPC-কে ৩০০ গুণ গুরুত্ব দেওয়া হয়েছে যাতে বাজেটের চেয়ে CPC-র প্রভাব বেশি থাকে।
+  if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
+    const cpc = listing.promotion.ppc.costPerClick || 0.1;
+    const balance = listing.promotion.ppc.ppcBalance || 0;
 
-//       // ১. রিয়েল-টাইম এক্সচেঞ্জ রেট আনা
-//       const fxRate = await getExchangeRate(paymentCurrency, targetCurrency);
-//       const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
+    // লজিক: (প্রতি ক্লিকের দাম * ৩০০) + (বাজেটের ৫%)
+    // এর ফলে কেউ ১০ ইউরো দিয়ে ৫ ইউরো সিপিসি দিলে সে ১০০ ইউরো দিয়ে ০.১ সিপিসি দেওয়া ইউজারের চেয়ে উপরে থাকবে।
+    ppcScore = cpc * 300 + balance * 0.05;
+  }
 
-//       // ২. ভ্যাট ক্যালকুলেশন (শুধুমাত্র হিসাবের জন্য, টোটাল অ্যামাউন্ট থেকে আলাদা করা)
-//       const vatRate = parseFloat(process.env.DEFAULT_VAT_RATE) || 19;
-//       const vatAmountInEUR = Number((amountInEUR - amountInEUR / (1 + vatRate / 100)).toFixed(2));
+  // ৩. ফাইনাল আপডেট
+  listing.promotion.level = Math.floor(boostScore + ppcScore);
 
-//       // ৩. ট্রানজেকশন রেকর্ড
-//       await Transaction.create(
-//         [
-//           {
-//             creator: creatorId,
-//             listing: listingId,
-//             stripeSessionId: session.id,
-//             amountPaid,
-//             currency: session.currency,
-//             fxRate,
-//             amountInEUR,
-//             packageType,
-//             status: 'completed',
-//             invoiceNumber: `INV-${Date.now()}`,
-//             vatAmount: vatAmountInEUR,
-//           },
-//         ],
-//         { session: dbSession }
-//       );
+  const hasActivePpc = listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0;
+  const hasActiveBoost =
+    listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
 
-//       // ৪. লিস্টিং আপডেট
-//       const listing = await Listing.findById(listingId).session(dbSession);
-//       if (!listing) throw new Error('Listing not found');
+  listing.isPromoted = !!(hasActivePpc || hasActiveBoost);
 
-//       if (packageType === 'boost') {
-//         listing.promotion.boost.isActive = true;
-//         listing.promotion.boost.amountPaid = amountInEUR;
-//         const expiry = new Date();
-//         expiry.setDate(expiry.getDate() + parseInt(days));
-//         listing.promotion.boost.expiresAt = expiry;
-//       } else if (packageType === 'ppc') {
-//         listing.promotion.ppc.isActive = true;
-//         listing.promotion.ppc.ppcBalance = Number(
-//           ((listing.promotion.ppc.ppcBalance || 0) + amountInEUR).toFixed(2)
-//         );
-//         listing.promotion.ppc.amountPaid = Number(
-//           ((listing.promotion.ppc.amountPaid || 0) + amountInEUR).toFixed(2)
-//         );
-//         listing.promotion.ppc.totalClicks =
-//           (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
+  // যদি কোনো প্রোমোশন একটিভ না থাকে তবে লেভেল ০
+  if (!listing.isPromoted) listing.promotion.level = 0;
 
-//         // CPC-কেও EUR-তে কনভার্ট করা হলো
-//         const cpcInEUR = Number((Number(originalCpc) * fxRate).toFixed(4));
-//         listing.promotion.ppc.costPerClick = cpcInEUR;
-//       }
-
-//       applyPromotionLogic(listing);
-//       await listing.save({ session: dbSession });
-
-//       await dbSession.commitTransaction();
-//       console.log(`Success: Converted ${amountPaid} ${paymentCurrency} to ${amountInEUR} EUR`);
-//     } catch (error) {
-//       await dbSession.abortTransaction();
-//       console.error('Webhook Error:', error);
-//     } finally {
-//       dbSession.endSession();
-//     }
-//   }
-//   res.json({ received: true });
-// };
+  return listing;
+};
 
 export const handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -226,14 +150,13 @@ export const handleStripeWebhook = async (req, res) => {
       const paymentCurrency = session.currency.toUpperCase();
       const targetCurrency = 'EUR';
 
-      // ১. কারেন্সি কনভার্সন
       const fxRate = await getExchangeRate(paymentCurrency, targetCurrency);
       const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
 
-      // ২. ট্রানজেকশন রেকর্ড (ভ্যাট সহ)
       const vatRate = 19;
       const vatAmountInEUR = Number((amountInEUR - amountInEUR / (1 + vatRate / 100)).toFixed(2));
 
+      // ট্রানজেকশন তৈরি
       await Transaction.create(
         [
           {
@@ -253,10 +176,10 @@ export const handleStripeWebhook = async (req, res) => {
         { session: dbSession }
       );
 
-      // ৩. লিস্টিং আপডেট ও লেভেল ক্যালকুলেশন
       const listing = await Listing.findById(listingId).session(dbSession);
       if (!listing) throw new Error('Listing not found');
 
+      // পেমেন্ট ডাটা আপডেট
       if (packageType === 'boost') {
         listing.promotion.boost.isActive = true;
         listing.promotion.boost.amountPaid = amountInEUR;
@@ -274,25 +197,12 @@ export const handleStripeWebhook = async (req, res) => {
         listing.promotion.ppc.totalClicks =
           (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
 
-        // CPC EUR-তে কনভার্ট করা হলো
         const cpcInEUR = Number((Number(originalCpc) * fxRate).toFixed(4));
         listing.promotion.ppc.costPerClick = cpcInEUR;
       }
 
-      // ৪. নতুন র‍্যাঙ্কিং অ্যালগরিদম (Views/Favs বাদ দেওয়া হয়েছে)
-      // Boost Intensity = (টাকা / দিন) * ২
-      const boostIntensity = listing.promotion.boost.isActive
-        ? (listing.promotion.boost.amountPaid / parseInt(days || 1)) * 2
-        : 0;
-
-      // PPC Priority = (CPC * ১০) + (টোটাল বাজেট / ১০)
-      const ppcPriority = listing.promotion.ppc.isActive
-        ? listing.promotion.ppc.costPerClick * 10 + listing.promotion.ppc.ppcBalance / 10
-        : 0;
-
-      // ফাইনাল লেভেল সেট (সাথে সাথে রিফ্রেশ)
-      listing.promotion.level = Math.floor(boostIntensity + ppcPriority);
-      listing.isPromoted = true;
+      // র‍্যাঙ্কিং লজিক কল করা (days পাস করা হয়েছে সঠিক ক্যালকুলেশনের জন্য)
+      applyPromotionLogic(listing, parseInt(days) || null);
 
       await listing.save({ session: dbSession });
       await dbSession.commitTransaction();
