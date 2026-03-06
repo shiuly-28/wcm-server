@@ -123,42 +123,33 @@ export const getPromotionAnalytics = async (req, res) => {
       .select('title promotion views isPromoted image')
       .lean();
 
-    if (!listing) {
-      return res.status(404).json({ success: false, message: 'Listing not found' });
-    }
+    if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
     const ppc = listing.promotion?.ppc || {};
     const boost = listing.promotion?.boost || {};
-
-    // --- PPC Calculation Logic (New & Precise) ---
-    const costPerClick = Number(ppc.costPerClick) || 0.1;
-    const currentBalance = Number(ppc.ppcBalance) || 0;
-
-    const totalPurchasedClicks = Number(ppc.totalClicks) || 0;
-    const clicksUsed = Number(ppc.executedClicks) || 0;
-
-    const clicksRemaining = totalPurchasedClicks - clicksUsed;
-
-    let consumptionRate = 0;
-    if (totalPurchasedClicks > 0) {
-      consumptionRate = Number(((clicksUsed / totalPurchasedClicks) * 100).toFixed(1));
-    }
-
-    // --- Boost Calculation ---
-    let daysRemaining = 0;
-    let boostProgress = 0;
     const now = new Date();
+
+    // --- PPC Calculation ---
+    const totalPurchased = Number(ppc.totalClicks) || 0;
+    const executed = Number(ppc.executedClicks) || 0;
+    const remaining = Math.max(0, totalPurchased - executed);
+    const consumptionRate =
+      totalPurchased > 0 ? Number(((executed / totalPurchased) * 100).toFixed(1)) : 0;
+
+    // --- Boost Calculation (Real-time Focus) ---
+    let daysRemaining = 0;
+    let hoursRemaining = 0;
+    let isExpiringSoon = false;
 
     if (boost.isActive && boost.expiresAt) {
       const expiry = new Date(boost.expiresAt);
-      if (expiry > now) {
-        const diffTime = expiry - now;
-        daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const diffMs = expiry - now;
 
-        boostProgress = Number(Math.min(100, (daysRemaining / 30) * 100).toFixed(1));
-      } else {
-        daysRemaining = 0;
-        boostProgress = 0;
+      if (diffMs > 0) {
+        daysRemaining = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        hoursRemaining = Math.floor(diffMs / (1000 * 60 * 60));
+        // যদি ২৪ ঘণ্টার কম থাকে
+        if (hoursRemaining < 24) isExpiringSoon = true;
       }
     }
 
@@ -171,24 +162,24 @@ export const getPromotionAnalytics = async (req, res) => {
         level: listing.promotion?.level || 0,
         views: listing.views || 0,
         ppc: {
-          isActive: !!(ppc.isActive && currentBalance >= costPerClick),
-          balance: currentBalance.toFixed(2),
-          costPerClick: costPerClick.toFixed(2),
-          totalPurchasedClicks,
-          clicksUsed,
-          clicksRemaining: Math.max(0, clicksRemaining),
+          isActive: !!(ppc.isActive && ppc.ppcBalance > 0),
+          balance: Number(ppc.ppcBalance || 0).toFixed(2),
+          costPerClick: Number(ppc.costPerClick || 0.1).toFixed(2),
+          totalPurchased,
+          clicksUsed: executed,
+          clicksRemaining: remaining,
           consumptionRate: Math.min(100, consumptionRate),
         },
         boost: {
-          isActive: !!(boost.isActive && daysRemaining > 0),
+          isActive: !!(boost.isActive && hoursRemaining > 0),
           expiresAt: boost.expiresAt,
           daysRemaining,
-          boostProgress,
+          hoursRemaining,
+          isExpiringSoon,
         },
       },
     });
   } catch (error) {
-    console.error('Analytics Error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load insights.' });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };
