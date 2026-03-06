@@ -537,7 +537,11 @@ export const getAdminStats = async (req, res) => {
       User.countDocuments({ role: 'creator' }),
       Listing.countDocuments(),
       Listing.countDocuments({ status: 'pending' }),
-      User.countDocuments({ 'creatorRequest.status': 'pending', 'creatorRequest.isApplied': true }),
+      User.countDocuments({
+        role: 'user',
+        'creatorRequest.isApplied': true,
+        'creatorRequest.status': 'pending',
+      }),
       Transaction.find({ status: 'completed' }),
       Listing.countDocuments({
         'promotion.ppc.isActive': true,
@@ -549,35 +553,26 @@ export const getAdminStats = async (req, res) => {
       }),
     ]);
 
-    // --- রেভিনিউ ও ফি ক্যালকুলেশন ---
+    // --- ফিন্যান্সিয়াল ক্যালকুলেশন (Database Saved Data) ---
     let totalRevenue = 0;
     let totalVat = 0;
     let totalStripeFees = 0;
 
     transactions.forEach((t) => {
+      // আমরা সরাসরি amountPaid এবং vatAmount ব্যবহার করছি যা ট্রানজেকশনের সময় সেভ হয়েছিল
       const amount = t.amountPaid || 0;
       totalRevenue += amount;
       totalVat += t.vatAmount || 0;
 
-      // স্ট্রাইপ ফি ক্যালকুলেশন (Standard: 2.9% + 0.30)
-      // নোট: আপনার স্ট্রাইপ অ্যাকাউন্টের নির্দিষ্ট রেট অনুযায়ী এটি পরিবর্তন করতে পারেন
+      // স্ট্রাইপ ফি (এখানে আপনি আপনার একচুয়াল ফি রেট বসাতে পারেন)
       const fee = amount * 0.029 + 0.3;
       totalStripeFees += fee;
     });
 
-    const netRevenue = totalRevenue - totalVat; // ভ্যাট বাদে
-    const finalProfit = netRevenue - totalStripeFees; // ভ্যাট এবং স্ট্রাইপ ফি দুইটাই বাদে (আসল লাভ)
+    const netRevenue = totalRevenue - totalVat; // ট্যাক্স বাদে আয়
+    const finalProfit = netRevenue - totalStripeFees; // ট্যাক্স এবং গেটওয়ে ফি বাদে আসল লাভ
 
-    // পিপিছি এবং বুস্ট রেভিনিউ আলাদা করা
-    const ppcRevenue = transactions
-      .filter((t) => t.packageType === 'ppc')
-      .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
-
-    const boostRevenue = transactions
-      .filter((t) => t.packageType === 'boost')
-      .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
-
-    // ক্যাটাগরি এবং গ্রোথ লজিক (আগের মতোই)
+    // ক্যাটাগরি ডিস্ট্রিবিউশন
     const categoryDist = await Listing.aggregate([
       { $group: { _id: '$category', value: { $sum: 1 } } },
       { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'catDetails' } },
@@ -585,6 +580,7 @@ export const getAdminStats = async (req, res) => {
       { $project: { _id: 0, name: '$catDetails.title', value: 1 } },
     ]);
 
+    // চার্টের জন্য ডেইলি ডেটা (Revenue vs Profit)
     const dailyStats = await Transaction.aggregate([
       { $match: { createdAt: { $gte: sevenDaysAgo }, status: 'completed' } },
       {
@@ -592,6 +588,7 @@ export const getAdminStats = async (req, res) => {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
           revenue: { $sum: '$amountPaid' },
           vat: { $sum: '$vatAmount' },
+          count: { $sum: 1 },
         },
       },
       { $sort: { _id: 1 } },
@@ -611,32 +608,43 @@ export const getAdminStats = async (req, res) => {
     res.status(200).json({
       success: true,
       cards: {
-        totalRevenue: totalRevenue.toFixed(2), // মোট টাকা (Gross)
-        totalVat: totalVat.toFixed(2), // মোট ভ্যাট (Tax)
-        stripeFees: totalStripeFees.toFixed(2), // স্ট্রাইপকে দেওয়া ফি
-        netProfit: finalProfit.toFixed(2), // আপনার পকেটে আসা আসল লাভ (Final)
-        ppcRevenue: ppcRevenue.toFixed(2),
-        boostRevenue: boostRevenue.toFixed(2),
+        totalRevenue: totalRevenue.toFixed(2),
+        totalVat: totalVat.toFixed(2),
+        stripeFees: totalStripeFees.toFixed(2),
+        netProfit: finalProfit.toFixed(2),
+        ppcRevenue: transactions
+          .filter((t) => t.packageType === 'ppc')
+          .reduce((a, b) => a + b.amountPaid, 0)
+          .toFixed(2),
+        boostRevenue: transactions
+          .filter((t) => t.packageType === 'boost')
+          .reduce((a, b) => a + b.amountPaid, 0)
+          .toFixed(2),
         totalUsers,
         totalCreators,
         totalListings,
+        pendingListings,
+        pendingRequests,
         activeCampaigns: activePpcCampaigns + activeBoostCampaigns,
       },
       charts: {
         categories: categoryDist,
-        revenueAndUsers: dailyStats.map((ds) => {
+        // ফ্রন্টেন্ডে এই ডেটা দিয়ে Line Chart বানাবেন
+        revenueProfitFlow: dailyStats.map((ds) => {
           const userEntry = userGrowth.find((ug) => ug._id === ds._id);
-          const dailyFee = ds.revenue * 0.029 + 0.3;
+          // ঐ দিনের ফি ক্যালকুলেশন
+          const dailyFee = ds.revenue * 0.029 + ds.count * 0.3;
           return {
             date: ds._id,
-            revenue: ds.revenue.toFixed(2),
-            profit: (ds.revenue - ds.vat - dailyFee).toFixed(2), // ডেইলি নিট প্রফিট
+            revenue: Number(ds.revenue.toFixed(2)), // উপরের লাইন (Gross)
+            profit: Number((ds.revenue - ds.vat - dailyFee).toFixed(2)), // নিচের লাইন (Net)
             users: userEntry ? userEntry.newUsers : 0,
           };
         }),
       },
     });
   } catch (error) {
+    console.error('Admin Stats Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
