@@ -5,6 +5,7 @@ import Transaction from '../models/Transaction.js';
 import Listing from '../models/Listing.js';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { createAuditLog } from '../utils/logger.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -231,8 +232,24 @@ export const handleStripeWebhook = async (req, res) => {
       }
 
       applyPromotionLogic(listing, parseInt(days) || null);
-
       await listing.save({ session: dbSession });
+
+      await createAuditLog({
+        req,
+        user: creatorId, // সরাসরি পাস করা হলো
+        action: 'PROMOTION_PURCHASED',
+        targetType: 'Transaction',
+        targetId: transaction[0]._id,
+        details: {
+          listingTitle: listing.title,
+          packageType: packageType, // 'boost' or 'ppc'
+          amountPaid: `${amountPaid} ${paymentCurrency}`,
+          amountInEUR: `${amountInEUR} EUR`,
+          status: 'Success',
+          message: `Creator purchased ${packageType.toUpperCase()} for "${listing.title}"`,
+        },
+      });
+
       await dbSession.commitTransaction();
 
       console.log(`[Webhook] Success. Transaction saved with VAT: ${vatAmount}`);

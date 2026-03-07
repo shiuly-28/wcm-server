@@ -8,6 +8,7 @@ import listingRoutes from './routes/listingRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
 import creatorRoutes from './routes/creatorRoutes.js';
+import auditRoutes from './routes/auditRoutes.js';
 
 const app = express();
 const __dirname = path.resolve();
@@ -29,6 +30,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/listings', listingRoutes);
 app.use('/api/creator', creatorRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/audit', auditRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
