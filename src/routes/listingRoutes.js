@@ -14,18 +14,17 @@ import {
   cancelPromotion,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles, optionalAuth } from '../middlewares/auth.js';
-import { trackingLimiter } from '../middlewares/rateLimiter.js';
 
 const router = express.Router();
 
-router.get('/public', trackingLimiter, optionalAuth, getPublicListings);
+router.get('/public', optionalAuth, getPublicListings);
 router.get('/meta-data', getCategoriesAndTags);
 
 router.get('/count/:creatorId', getCreatorListingCount);
 
 router.post('/favorite/:id', authMiddleware, toggleFavorite);
 
-router.post('/:id/click', trackingLimiter, handlePpcClick);
+router.post('/:id/click', handlePpcClick);
 
 router.get('/my-listings', authMiddleware, authorizeRoles('creator'), getMyListings);
 router.post(
@@ -44,7 +43,7 @@ router.put(
 );
 router.delete('/delete/:id', authMiddleware, authorizeRoles('creator'), deleteListing);
 
-router.get('/:id', trackingLimiter, optionalAuth, getListingById);
+router.get('/:id', optionalAuth, getListingById);
 router.patch('/:id/cancel-promotion', authMiddleware, cancelPromotion);
 
 export default router;

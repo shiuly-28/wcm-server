@@ -18,7 +18,7 @@ import { authLimiter } from '../middlewares/rateLimiter.js';
 const router = express.Router();
 
 router.post('/register', authLimiter, registerUser);
-router.post('/login', authLimiter, loginUser);
+router.post('/login', loginUser);
 router.post('/logout', logoutUser);
 router.delete('/delete-account', authMiddleware, deleteUserAccount);
 

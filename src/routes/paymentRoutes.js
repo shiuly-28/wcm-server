@@ -19,6 +19,6 @@ router.post(
   createCheckoutSession
 );
 
-router.get('/creator/invoice/:id', authLimiter, authMiddleware, generateInvoice);
+router.get('/creator/invoice/:id', authMiddleware, generateInvoice);
 
 export default router;
