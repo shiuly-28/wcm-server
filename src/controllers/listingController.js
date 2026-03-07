@@ -322,116 +322,6 @@ export const getPublicListings = async (req, res) => {
 };
 
 // --- IP Helper ---
-// const getClientIp = (req) => {
-//   return req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || req.ip;
-// };
-
-// export const getListingById = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const userIp = getClientIp(req);
-
-//     const listing = await Listing.findById(id)
-//       .populate('creatorId', 'firstName lastName username profile.profileImage')
-//       .populate('category', 'title')
-//       .populate('culturalTags', 'title image');
-
-//     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
-
-//     const alreadyViewed = await InteractionLog.findOne({
-//       listingId: id,
-//       ip: userIp,
-//       type: 'view',
-//     });
-
-//     if (!alreadyViewed) {
-//       await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } });
-
-//       await InteractionLog.create({
-//         listingId: id,
-//         ip: userIp,
-//         type: 'view',
-//       });
-
-//       const today = new Date();
-//       today.setHours(0, 0, 0, 0);
-//       await Analytics.findOneAndUpdate(
-//         { listingId: id, date: today },
-//         {
-//           $inc: { views: 1 },
-//           $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
-//         },
-//         { upsert: true }
-//       );
-//     }
-
-//     res.status(200).json(listing);
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-
-// export const handlePpcClick = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const userIp = getClientIp(req);
-
-//     const listing = await Listing.findById(id);
-//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-//     if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
-//       return res.status(200).json({ success: true, message: 'Organic click.' });
-//     }
-
-//     const alreadyClicked = await InteractionLog.findOne({
-//       listingId: id,
-//       ip: userIp,
-//       type: 'ppc_click',
-//     });
-
-//     if (alreadyClicked) {
-//       return res.status(200).json({ message: 'Click already recorded.' });
-//     }
-
-//     const cost = listing.promotion.ppc.costPerClick || 0.1;
-
-//     if (listing.promotion.ppc.ppcBalance >= cost) {
-//       listing.promotion.ppc.ppcBalance = Number(
-//         (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
-//       );
-//       listing.promotion.ppc.executedClicks += 1;
-
-//       if (listing.promotion.ppc.ppcBalance < 0.01) {
-//         listing.promotion.ppc.isActive = false;
-//         const now = new Date();
-//         const hasBoost =
-//           listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
-//         listing.isPromoted = hasBoost;
-//       }
-
-//       await listing.save();
-
-//       await InteractionLog.create({ listingId: id, ip: userIp, type: 'ppc_click' });
-
-//       const today = new Date();
-//       today.setHours(0, 0, 0, 0);
-//       await Analytics.findOneAndUpdate(
-//         { listingId: id, date: today },
-//         { $inc: { clicks: 1 }, $setOnInsert: { creatorId: listing.creatorId } },
-//         { upsert: true }
-//       );
-
-//       return res.status(200).json({ success: true, balance: listing.promotion.ppc.ppcBalance });
-//     }
-
-//     res.status(400).json({ message: 'Insufficient PPC balance.' });
-//   } catch (error) {
-//     res.status(500).json({ message: error.message });
-//   }
-// };
-
-
-// --- IP Helper ---
 const getClientIp = (req) => {
   return req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || req.ip;
 };
@@ -440,6 +330,8 @@ export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
     const userIp = getClientIp(req);
+    const userAgent = req.headers['user-agent'];
+    const userId = req.user?._id; // যদি মিডলওয়্যার থেকে ইউজার আইডি পাওয়া যায়
 
     const listing = await Listing.findById(id)
       .populate('creatorId', 'firstName lastName username profile.profileImage')
@@ -448,23 +340,39 @@ export const getListingById = async (req, res) => {
 
     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
-    const alreadyViewed = await InteractionLog.findOne({
+    // ১. ভিউ চেক করার জন্য কুয়েরি (IP এবং User Agent এর কম্বিনেশন অথবা UserId)
+    // শুধু IP দিলে একই অফিসের বা বাসার সবার ভিউ ব্লক হয়ে যায়
+    const viewQuery = {
       listingId: id,
-      ip: userIp,
       type: 'view',
-    });
+      $or: [
+        { ip: userIp, userAgent: userAgent }, // একই আইপি কিন্তু ভিন্ন ব্রাউজার হলে ভিউ হবে
+      ],
+    };
+
+    if (userId) {
+      viewQuery.$or.push({ userId: userId });
+    }
+
+    const alreadyViewed = await InteractionLog.findOne(viewQuery);
 
     if (!alreadyViewed) {
+      // ২. অ্যাটমিক আপডেট (সরাসরি ডাটাবেজে ভিউ বাড়ানো)
       await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } });
 
+      // ৩. ইন্টারঅ্যাকশন লগ তৈরি
       await InteractionLog.create({
         listingId: id,
+        userId: userId || null,
         ip: userIp,
+        userAgent: userAgent,
         type: 'view',
       });
 
+      // ৪. অ্যানালিটিক্স আপডেট
       const today = new Date();
       today.setHours(0, 0, 0, 0);
+
       await Analytics.findOneAndUpdate(
         { listingId: id, date: today },
         {
@@ -477,6 +385,7 @@ export const getListingById = async (req, res) => {
 
     res.status(200).json(listing);
   } catch (error) {
+    console.error('View Count Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -485,34 +394,46 @@ export const handlePpcClick = async (req, res) => {
   try {
     const { id } = req.params;
     const userIp = getClientIp(req);
+    const userId = req.user?._id; // Auth Middleware থেকে আসবে
+    const userAgent = req.headers['user-agent'];
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
+    // ১. PPC একটিভ না থাকলে অর্গানিক ক্লিক হিসেবে রিটার্ন
     if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
       return res.status(200).json({ success: true, message: 'Organic click.' });
     }
 
-    const alreadyClicked = await InteractionLog.findOne({
+    // ২. ডুপ্লিকেট ক্লিক চেক (User ID অথবা IP দিয়ে)
+    const query = {
       listingId: id,
-      ip: userIp,
       type: 'ppc_click',
-    });
+      $or: [{ ip: userIp }],
+    };
+    if (userId) query.$or.push({ userId: userId });
+
+    const alreadyClicked = await InteractionLog.findOne(query);
 
     if (alreadyClicked) {
-      return res.status(200).json({ message: 'Click already recorded.' });
+      return res.status(200).json({ message: 'Click already recorded for this session.' });
     }
 
     const cost = listing.promotion.ppc.costPerClick || 0.1;
 
+    // ৩. ব্যালেন্স কাটা এবং পিপিইউ রিফ্রেশ লজিক
     if (listing.promotion.ppc.ppcBalance >= cost) {
       listing.promotion.ppc.ppcBalance = Number(
         (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
       );
       listing.promotion.ppc.executedClicks += 1;
 
+      // পিপিইউ ব্যালেন্স শেষ হয়ে গেলে রিসেট লজিক
       if (listing.promotion.ppc.ppcBalance < 0.01) {
         listing.promotion.ppc.isActive = false;
+        listing.promotion.ppc.ppcBalance = 0;
+        listing.promotion.ppc.amountPaid = 0; // ডাটাবেজে পেমেন্ট রিফ্রেশ/রিসেট
+
         const now = new Date();
         const hasBoost =
           listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
@@ -521,8 +442,16 @@ export const handlePpcClick = async (req, res) => {
 
       await listing.save();
 
-      await InteractionLog.create({ listingId: id, ip: userIp, type: 'ppc_click' });
+      // ৪. লগ তৈরি (User ID সহ)
+      await InteractionLog.create({
+        listingId: id,
+        userId: userId || null,
+        ip: userIp,
+        type: 'ppc_click',
+        userAgent: userAgent,
+      });
 
+      // ৫. অ্যানালিটিক্স
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       await Analytics.findOneAndUpdate(
