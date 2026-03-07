@@ -251,34 +251,62 @@ export const generateInvoice = async (req, res) => {
     const { id } = req.params;
 
     const transaction = await Transaction.findById(id)
-      .populate('creator', 'firstName lastName email profile')
+      .populate('creator', 'firstName lastName email profile role')
       .populate('listing', 'title');
 
-    if (!transaction) return res.status(404).json({ message: 'Invoice not found' });
+    if (!transaction) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // --- Authorization Check ---
+    // Admin can see all, Creator can only see their own
+    const isAdmin = req.user.role === 'admin';
+    const isOwner = transaction.creator._id.toString() === req.user._id.toString();
+
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ message: 'Unauthorized access to this invoice' });
+    }
 
     const doc = new jsPDF();
     const totalPaid = transaction.amountPaid;
-    const vatAmount = transaction.vatAmount;
+    const vatAmount = transaction.vatAmount || 0;
     const netAmount = totalPaid - vatAmount;
+    const currency = transaction.currency.toUpperCase();
 
-    // ভ্যাট রেট পারসেন্টেজ বের করা (যেমন: ১৯.০০%)
-    const vatRatePercent = ((vatAmount / netAmount) * 100).toFixed(2);
+    // Calculate VAT percentage
+    const vatRatePercent = netAmount > 0 ? ((vatAmount / netAmount) * 100).toFixed(2) : '0.00';
 
-    // --- Header ---
-    doc.setFillColor(249, 115, 22);
+    // --- Header Style ---
+    doc.setFillColor(249, 115, 22); // Orange Theme
     doc.rect(0, 0, 210, 40, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
     doc.text('OFFICIAL INVOICE', 15, 25);
 
     doc.setFontSize(10);
-    doc.text(process.env.BUSINESS_NAME, 195, 25, { align: 'right' });
+    doc.text(process.env.BUSINESS_NAME || 'YOUR BUSINESS NAME', 195, 25, { align: 'right' });
 
-    // --- Details ---
+    // --- Details Section ---
     doc.setTextColor(40, 40, 40);
-    doc.text(`Invoice No: ${transaction.invoiceNumber}`, 15, 55);
-    doc.text(`Date: ${new Date(transaction.createdAt).toLocaleDateString()}`, 15, 62);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Invoice No:`, 15, 55);
+    doc.setFont('helvetica', 'normal');
+    doc.text(transaction.invoiceNumber || `INV-${transaction._id.toString().slice(-6)}`, 40, 55);
 
+    // Added Date & Time
+    const formattedDate = new Date(transaction.createdAt).toLocaleString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    doc.text(`Date & Time: ${formattedDate}`, 15, 62);
+
+    // Bill To
     doc.setFont('helvetica', 'bold');
     doc.text('Bill To:', 140, 55);
     doc.setFont('helvetica', 'normal');
@@ -291,35 +319,47 @@ export const generateInvoice = async (req, res) => {
       head: [['Service Description', 'Net Price', 'VAT Amount', 'Total']],
       body: [
         [
-          `${transaction.packageType.toUpperCase()} Promotion - ${transaction.listing.title}`,
-          `${netAmount.toFixed(2)} ${transaction.currency.toUpperCase()}`,
+          {
+            content: `${transaction.packageType.toUpperCase()} Promotion\nAsset: ${transaction.listing?.title || 'N/A'}`,
+            styles: { cellPadding: 5 },
+          },
+          `${netAmount.toFixed(2)} ${currency}`,
           `${vatAmount.toFixed(2)} (${vatRatePercent}%)`,
-          `${totalPaid.toFixed(2)} ${transaction.currency.toUpperCase()}`,
+          `${totalPaid.toFixed(2)} ${currency}`,
         ],
       ],
-      headStyles: { fillColor: [30, 30, 30] },
+      headStyles: { fillColor: [30, 30, 30], fontStyle: 'bold' },
+      styles: { fontSize: 9, valign: 'middle' },
+      theme: 'grid',
     });
 
     const finalY = doc.lastAutoTable.finalY + 15;
 
-    // Summary
+    // --- Summary Section ---
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
     doc.text('Total Amount Paid:', 130, finalY);
-    doc.text(`${totalPaid.toFixed(2)} ${transaction.currency.toUpperCase()}`, 195, finalY, {
-      align: 'right',
-    });
+    doc.text(`${totalPaid.toFixed(2)} ${currency}`, 195, finalY, { align: 'right' });
 
-    if (transaction.currency.toLowerCase() !== 'eur') {
+    // --- Exchange Rate Info (If not EUR) ---
+    if (currency !== 'EUR') {
       doc.setFontSize(8);
       doc.setFont('helvetica', 'italic');
       doc.setTextColor(100, 100, 100);
+      doc.text(`Exchange Rate Info: 1 ${currency} = ${transaction.fxRate} EUR.`, 15, finalY + 10);
       doc.text(
-        `Note: Payment converted to EUR at rate 1 ${transaction.currency.toUpperCase()} = ${transaction.fxRate}. Total: ${transaction.amountInEUR.toFixed(2)} EUR`,
+        `Internal Accounting Total: ${transaction.amountInEUR.toFixed(2)} EUR`,
         15,
         finalY + 15
       );
     }
+
+    // --- Footer ---
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text('This is a computer-generated document. No signature is required.', 105, 285, {
+      align: 'center',
+    });
 
     const pdfBuffer = doc.output('arraybuffer');
     res.setHeader('Content-Type', 'application/pdf');
@@ -329,6 +369,7 @@ export const generateInvoice = async (req, res) => {
     );
     res.send(Buffer.from(pdfBuffer));
   } catch (err) {
+    console.error('Invoice Gen Error:', err);
     res.status(500).json({ message: 'Error generating PDF invoice' });
   }
 };

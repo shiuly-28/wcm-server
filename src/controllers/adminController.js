@@ -387,138 +387,6 @@ export const exportUsersExcel = async (req, res) => {
   }
 };
 
-export const getAdminStats = async (req, res) => {
-  try {
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const now = new Date();
-
-    const [
-      totalUsers,
-      totalCreators,
-      totalListings,
-      pendingListings,
-      pendingRequests,
-      transactions,
-      activePpcCampaigns,
-      activeBoostCampaigns,
-    ] = await Promise.all([
-      User.countDocuments({ role: 'user' }),
-      User.countDocuments({ role: 'creator' }),
-      Listing.countDocuments(),
-      Listing.countDocuments({ status: 'pending' }),
-      User.countDocuments({
-        role: 'user',
-        'creatorRequest.isApplied': true,
-        'creatorRequest.status': 'pending',
-      }),
-      Transaction.find({ status: 'completed' }),
-      Listing.countDocuments({
-        'promotion.ppc.isActive': true,
-        'promotion.ppc.ppcBalance': { $gt: 0 },
-      }),
-      Listing.countDocuments({
-        'promotion.boost.isActive': true,
-        'promotion.boost.expiresAt': { $gt: now },
-      }),
-    ]);
-
-    // --- ফিন্যান্সিয়াল ক্যালকুলেশন (Database Saved Data) ---
-    let totalRevenue = 0;
-    let totalVat = 0;
-    let totalStripeFees = 0;
-
-    transactions.forEach((t) => {
-      // আমরা সরাসরি amountPaid এবং vatAmount ব্যবহার করছি যা ট্রানজেকশনের সময় সেভ হয়েছিল
-      const amount = t.amountPaid || 0;
-      totalRevenue += amount;
-      totalVat += t.vatAmount || 0;
-
-      // স্ট্রাইপ ফি (এখানে আপনি আপনার একচুয়াল ফি রেট বসাতে পারেন)
-      const fee = amount * 0.029 + 0.3;
-      totalStripeFees += fee;
-    });
-
-    const netRevenue = totalRevenue - totalVat; // ট্যাক্স বাদে আয়
-    const finalProfit = netRevenue - totalStripeFees; // ট্যাক্স এবং গেটওয়ে ফি বাদে আসল লাভ
-
-    // ক্যাটাগরি ডিস্ট্রিবিউশন
-    const categoryDist = await Listing.aggregate([
-      { $group: { _id: '$category', value: { $sum: 1 } } },
-      { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'catDetails' } },
-      { $unwind: '$catDetails' },
-      { $project: { _id: 0, name: '$catDetails.title', value: 1 } },
-    ]);
-
-    // চার্টের জন্য ডেইলি ডেটা (Revenue vs Profit)
-    const dailyStats = await Transaction.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo }, status: 'completed' } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          revenue: { $sum: '$amountPaid' },
-          vat: { $sum: '$vatAmount' },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    const userGrowth = await User.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          newUsers: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    res.status(200).json({
-      success: true,
-      cards: {
-        totalRevenue: totalRevenue.toFixed(2),
-        totalVat: totalVat.toFixed(2),
-        stripeFees: totalStripeFees.toFixed(2),
-        netProfit: finalProfit.toFixed(2),
-        ppcRevenue: transactions
-          .filter((t) => t.packageType === 'ppc')
-          .reduce((a, b) => a + b.amountPaid, 0)
-          .toFixed(2),
-        boostRevenue: transactions
-          .filter((t) => t.packageType === 'boost')
-          .reduce((a, b) => a + b.amountPaid, 0)
-          .toFixed(2),
-        totalUsers,
-        totalCreators,
-        totalListings,
-        pendingListings,
-        pendingRequests,
-        activeCampaigns: activePpcCampaigns + activeBoostCampaigns,
-      },
-      charts: {
-        categories: categoryDist,
-        // ফ্রন্টেন্ডে এই ডেটা দিয়ে Line Chart বানাবেন
-        revenueProfitFlow: dailyStats.map((ds) => {
-          const userEntry = userGrowth.find((ug) => ug._id === ds._id);
-          // ঐ দিনের ফি ক্যালকুলেশন
-          const dailyFee = ds.revenue * 0.029 + ds.count * 0.3;
-          return {
-            date: ds._id,
-            revenue: Number(ds.revenue.toFixed(2)), // উপরের লাইন (Gross)
-            profit: Number((ds.revenue - ds.vat - dailyFee).toFixed(2)), // নিচের লাইন (Net)
-            users: userEntry ? userEntry.newUsers : 0,
-          };
-        }),
-      },
-    });
-  } catch (error) {
-    console.error('Admin Stats Error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
 export const updateCategoryOrder = async (req, res) => {
   try {
     const { categories } = req.body;
@@ -763,5 +631,145 @@ export const getPromotedListings = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const getAdminStats = async (req, res) => {
+  try {
+    const now = new Date();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+
+    const twentyFourHoursAgo = new Date();
+    twentyFourHoursAgo.setHours(now.getHours() - 24);
+
+    const [
+      totalCreators,
+      totalListings,
+      pendingListings,
+      pendingRequests,
+      allTransactions,
+      recentPaymentsCount,
+      activePpcCount,
+      activeBoostCount,
+      globalAnalytics, // Analytics মডেল থেকে ডাটা
+    ] = await Promise.all([
+      User.countDocuments({ role: 'creator' }),
+      Listing.countDocuments(),
+      Listing.countDocuments({ status: 'pending' }),
+      User.countDocuments({
+        role: 'user',
+        'creatorRequest.isApplied': true,
+        'creatorRequest.status': 'pending',
+      }),
+      Transaction.find({ status: 'completed' }).lean(),
+      Transaction.countDocuments({
+        status: 'completed',
+        createdAt: { $gte: twentyFourHoursAgo },
+      }),
+      Listing.countDocuments({
+        'promotion.ppc.isActive': true,
+        'promotion.ppc.ppcBalance': { $gt: 0 },
+      }),
+      Listing.countDocuments({
+        'promotion.boost.isActive': true,
+        'promotion.boost.expiresAt': { $gt: now },
+      }),
+      // ✅ নির্ভুলতার জন্য Analytics মডেল থেকে ভিউ এবং ক্লিকের সামারি আনা
+      Analytics.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalViews: { $sum: '$views' },
+            totalClicks: { $sum: '$clicks' },
+          },
+        },
+      ]),
+    ]);
+
+    // ১. ফিন্যান্সিয়াল ক্যালকুলেশন
+    let totalRevenue = 0;
+    let totalVat = 0;
+    let totalStripeFees = 0;
+
+    allTransactions.forEach((t) => {
+      const amount = Number(t.amountPaid) || 0;
+      const vat = Number(t.vatAmount) || 0;
+      totalRevenue += amount;
+      totalVat += vat;
+      if (amount > 0) {
+        // Stripe Fee: 2.9% + 0.30 EUR (Standard)
+        totalStripeFees += amount * 0.029 + 0.3;
+      }
+    });
+
+    const netProfit = totalRevenue - totalVat - totalStripeFees;
+
+    // ২. চার্টের জন্য গত ৭ দিনের ফিন্যান্সিয়াল ডাটা
+    const dailyFinance = await Transaction.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: sevenDaysAgo },
+          status: 'completed',
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          revenue: { $sum: '$amountPaid' },
+          vat: { $sum: '$vatAmount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // ৩. গত ৭ দিনের ভিউ/ক্লিক অ্যানালিটিক্স (গ্রাফের সাথে মিল রাখার জন্য)
+    const dailyStats = await Analytics.aggregate([
+      { $match: { date: { $gte: sevenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+          views: { $sum: '$views' },
+          clicks: { $sum: '$clicks' },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      cards: {
+        totalRevenue: totalRevenue.toFixed(2),
+        totalVat: totalVat.toFixed(2),
+        stripeFees: totalStripeFees.toFixed(2),
+        netProfit: netProfit.toFixed(2),
+        // ✅ এখন এটি সরাসরি Analytics মডেলের সাথে সিঙ্কড
+        totalViews: globalAnalytics[0]?.totalViews || 0,
+        totalClicks: globalAnalytics[0]?.totalClicks || 0,
+        recentPayments: recentPaymentsCount,
+        activePromotions: activePpcCount + activeBoostCount,
+        pendingListings,
+        pendingCreatorRequests: pendingRequests,
+        totalCreators,
+      },
+      charts: {
+        revenueFlow: dailyFinance.map((d) => ({
+          date: d._id,
+          revenue: Number(d.revenue.toFixed(2)),
+          profit: Number((d.revenue - d.vat - (d.revenue * 0.029 + d.count * 0.3)).toFixed(2)),
+        })),
+        // অতিরিক্ত ডাটা যা আপনি গ্রাফে দেখাতে পারেন
+        performanceFlow: dailyStats.map((s) => ({
+          date: s._id,
+          views: s.views,
+          clicks: s.clicks,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Admin Stats Error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
