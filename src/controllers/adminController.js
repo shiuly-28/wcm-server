@@ -254,7 +254,7 @@ export const manageListings = async (req, res) => {
 
     const formattedListings = listings.map((item) => {
       // PPC Balance calculation
-      const ppcBalance = item.promotion?.ppc?.isActive ? (item.promotion.ppc.ppcBalance || 0) : 0;
+      const ppcBalance = item.promotion?.ppc?.isActive ? item.promotion.ppc.ppcBalance || 0 : 0;
 
       // Boost Remaining Time calculation
       let boostRemaining = 'No Active Boost';
@@ -273,12 +273,13 @@ export const manageListings = async (req, res) => {
       return {
         ...item,
         creatorName: item.creatorId
-          ? `${item.creatorId.firstName || ''} ${item.creatorId.lastName || ''}`.trim() || item.creatorId.username
+          ? `${item.creatorId.firstName || ''} ${item.creatorId.lastName || ''}`.trim() ||
+            item.creatorId.username
           : 'Unknown Creator',
         categoryName: item.category?.title || 'Uncategorized',
         ppcStatus: ppcBalance.toFixed(2),
         boostStatus: boostRemaining,
-        isCurrentlyPromoted: item.isPromoted && (ppcBalance > 0 || boostRemaining.includes('left'))
+        isCurrentlyPromoted: item.isPromoted && (ppcBalance > 0 || boostRemaining.includes('left')),
       };
     });
 
@@ -302,7 +303,7 @@ export const deleteListingByAdmin = async (req, res) => {
 export const updateListingStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, rejectionReason } = req.body; 
+    const { status, rejectionReason } = req.body;
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
@@ -310,7 +311,7 @@ export const updateListingStatus = async (req, res) => {
     listing.status = status;
     if (status === 'rejected') {
       listing.rejectionReason = rejectionReason || 'Does not follow community guidelines.';
-      listing.isPromoted = false; 
+      listing.isPromoted = false;
     }
 
     await listing.save();
@@ -383,137 +384,6 @@ export const exportUsersExcel = async (req, res) => {
   } catch (error) {
     console.error('EXPORT ERROR:', error);
     if (!res.headersSent) res.status(500).send('Export failed');
-  }
-};
-
-export const getAdminStats = async (req, res) => {
-  try {
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const now = new Date();
-
-    const [
-      totalUsers, 
-      totalCreators, 
-      totalListings, 
-      pendingListings,
-      pendingRequests,
-      transactions,
-      activePpcCampaigns,
-      activeBoostCampaigns
-    ] = await Promise.all([
-      User.countDocuments({ role: 'user' }),
-      User.countDocuments({ role: 'creator' }),
-      Listing.countDocuments(),
-      Listing.countDocuments({ status: 'pending' }),
-      User.countDocuments({ 'creatorRequest.status': 'pending', 'creatorRequest.isApplied': true }),
-      Transaction.find({ status: 'completed' }),
-      Listing.countDocuments({ 
-        'promotion.ppc.isActive': true, 
-        'promotion.ppc.ppcBalance': { $gt: 0 } 
-      }),
-      Listing.countDocuments({ 
-        'promotion.boost.isActive': true, 
-        'promotion.boost.expiresAt': { $gt: now } 
-      }),
-    ]);
-
-    const totalRevenue = transactions.reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
-    const ppcRevenue = transactions
-      .filter(t => t.packageType === 'ppc')
-      .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
-    const boostRevenue = transactions
-      .filter(t => t.packageType === 'boost')
-      .reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
-
-    const categoryDist = await Listing.aggregate([
-      {
-        $group: {
-          _id: "$category",
-          value: { $sum: 1 }
-        }
-      },
-      {
-        $lookup: {
-          from: "categories", 
-          localField: "_id",
-          foreignField: "_id",
-          as: "catDetails"
-        }
-      },
-      { $unwind: "$catDetails" },
-      {
-        $project: {
-          _id: 0,
-          name: "$catDetails.title",
-          value: 1
-        }
-      }
-    ]);
-
-    const dailyStats = await Transaction.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo }, status: 'completed' } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          revenue: { $sum: "$amountPaid" }
-        }
-      },
-      { $sort: { "_id": 1 } }
-    ]);
-
-    const userGrowth = await User.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          newUsers: { $sum: 1 }
-        }
-      },
-      { $sort: { "_id": 1 } }
-    ]);
-
-    const topPromotedListings = await Listing.find({ isPromoted: true })
-      .sort({ 'promotion.level': -1 })
-      .limit(5)
-      .select('title promotion.level promotion.ppc.isActive promotion.boost.isActive')
-      .lean();
-
-    res.status(200).json({
-      success: true,
-      cards: {
-        totalRevenue: totalRevenue.toFixed(2),
-        ppcRevenue: ppcRevenue.toFixed(2),
-        boostRevenue: boostRevenue.toFixed(2),
-        totalUsers,
-        totalCreators,
-        totalListings,
-        pendingListings,
-        pendingRequests,
-        activeCampaigns: activePpcCampaigns + activeBoostCampaigns,
-        activePpc: activePpcCampaigns,
-        activeBoost: activeBoostCampaigns
-      },
-      charts: {
-        categories: categoryDist,
-        revenueAndUsers: dailyStats.map(ds => {
-          const userEntry = userGrowth.find(ug => ug._id === ds._id);
-          return {
-            date: ds._id,
-            revenue: ds.revenue,
-            users: userEntry ? userEntry.newUsers : 0
-          };
-        }),
-        topPromoted: topPromotedListings.map(l => ({
-          name: l.title.substring(0, 15) + '...',
-          score: l.promotion.level,
-          type: l.promotion.ppc?.isActive ? 'PPC' : 'Boost'
-        }))
-      }
-    });
-  } catch (error) {
-    console.error('Admin Stats Error:', error);
-    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -606,27 +476,52 @@ export const exportTransactionsExcel = async (req, res) => {
 
 export const getAllTransactions = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = '' } = req.query;
-    
+    const { page = 1, limit = 10 } = req.query;
+
     let query = { status: 'completed' };
-    
+
     const transactions = await Transaction.find(query)
-      .populate('creator', 'firstName lastName email')
+      .populate('creator', 'firstName lastName email username')
       .populate('listing', 'title')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .skip((page - 1) * limit)
+      .lean();
 
     const count = await Transaction.countDocuments(query);
 
+    const formattedTransactions = transactions.map((tx) => {
+      const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
+
+      return {
+        _id: tx._id,
+        userId: tx.creator?._id || 'N/A',
+        creatorName: tx.creator ? `${tx.creator.firstName} ${tx.creator.lastName}` : 'Unknown',
+        creatorEmail: tx.creator?.email,
+        listingId: tx.listing?._id || 'N/A',
+        listingTitle: tx.listing?.title || 'Deleted Listing',
+        type: tx.packageType,
+        amount: tx.amountPaid,
+        currency: (tx.currency || 'EUR').toUpperCase(),
+        netAmount: Number(netAmount.toFixed(2)),
+        vatAmount: tx.vatAmount || 0,
+        fxRate: tx.fxRate || 1,
+        amountInEUR: tx.amountInEUR || 0,
+        invoiceNumber: tx.invoiceNumber || 'N/A',
+        stripeId: tx.stripeSessionId,
+        createdAt: tx.createdAt,
+      };
+    });
+
     res.status(200).json({
       success: true,
-      transactions,
+      transactions: formattedTransactions,
       totalPages: Math.ceil(count / limit),
-      currentPage: page,
-      totalCount: count
+      currentPage: Number(page),
+      totalCount: count,
     });
   } catch (error) {
+    console.error('GetAllTransactions Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -634,7 +529,7 @@ export const getAllTransactions = async (req, res) => {
 export const updatePpcBalanceManual = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amountToAdd } = req.body; 
+    const { amountToAdd } = req.body;
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
@@ -645,15 +540,236 @@ export const updatePpcBalanceManual = async (req, res) => {
     listing.promotion.ppc.ppcBalance = newBalance;
     listing.promotion.ppc.isActive = newBalance > 0;
     listing.isPromoted = true;
-    
+
     await listing.save();
 
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       message: `Successfully added €${amountToAdd}. New balance: €${newBalance}`,
-      newBalance 
+      newBalance,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const getPromotedListings = async (req, res) => {
+  try {
+    const { search = '', type = 'all', page = 1, limit = 10 } = req.query;
+    const now = new Date();
+
+    // ফিল্টার কুয়েরি তৈরি
+    let query = {
+      $or: [
+        { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $gt: now } },
+        { 'promotion.ppc.isActive': true, 'promotion.ppc.ppcBalance': { $gt: 0 } },
+      ],
+    };
+
+    // সার্চ লজিক (Title বা Creator Email দিয়ে)
+    if (search) {
+      query.$and = [
+        {
+          $or: [
+            { title: { $regex: search, $options: 'i' } },
+            { 'creatorId.email': { $regex: search, $options: 'i' } },
+          ],
+        },
+      ];
+    }
+
+    // টাইপ ফিল্টার (Boost নাকি PPC)
+    if (type === 'boost') {
+      query = { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $gt: now } };
+    } else if (type === 'ppc') {
+      query = { 'promotion.ppc.isActive': true, 'promotion.ppc.ppcBalance': { $gt: 0 } };
+    }
+
+    const listings = await Listing.find(query)
+      .populate('creatorId', 'firstName lastName email username')
+      .sort({ 'promotion.level': -1 }) // সবচেয়ে বেশি টাকা খরচ করা লিস্টিং উপরে থাকবে
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .lean();
+
+    const count = await Listing.countDocuments(query);
+
+    // প্রতিটি লিস্টিংয়ের জন্য লেটেস্ট ট্রানজেকশন/ইনভয়েস আইডি খুঁজে বের করা
+    const formattedData = await Promise.all(
+      listings.map(async (item) => {
+        // এই লিস্টিংয়ের জন্য শেষ সফল পেমেন্টটি খুঁজে বের করা
+        const lastTransaction = await Transaction.findOne({
+          listing: item._id,
+          status: 'completed',
+        })
+          .sort({ createdAt: -1 })
+          .select('_id invoiceNumber');
+
+        return {
+          _id: item._id,
+          title: item.title,
+          creatorName: `${item.creatorId?.firstName} ${item.creatorId?.lastName}`,
+          creatorEmail: item.creatorId?.email,
+          boostStatus:
+            item.promotion.boost.isActive && item.promotion.boost.expiresAt > now
+              ? `Expires: ${new Date(item.promotion.boost.expiresAt).toLocaleDateString()}`
+              : 'Inactive',
+          ppcBalance: `€${item.promotion.ppc.ppcBalance.toFixed(2)}`,
+          promotionLevel: item.promotion.level,
+          invoiceId: lastTransaction ? lastTransaction._id : null, // ইনভয়েস ডাউনলোডের জন্য আইডি
+          invoiceNo: lastTransaction ? lastTransaction.invoiceNumber : 'N/A',
+        };
+      })
+    );
+
+    res.status(200).json({
+      success: true,
+      listings: formattedData,
+      totalCount: count,
+      totalPages: Math.ceil(count / limit),
+      currentPage: Number(page),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const getAdminStats = async (req, res) => {
+  try {
+    const now = new Date();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+
+    const twentyFourHoursAgo = new Date();
+    twentyFourHoursAgo.setHours(now.getHours() - 24);
+
+    const [
+      totalCreators,
+      totalListings,
+      pendingListings,
+      pendingRequests,
+      allTransactions,
+      recentPaymentsCount,
+      activePpcCount,
+      activeBoostCount,
+      globalAnalytics, // Analytics মডেল থেকে ডাটা
+    ] = await Promise.all([
+      User.countDocuments({ role: 'creator' }),
+      Listing.countDocuments(),
+      Listing.countDocuments({ status: 'pending' }),
+      User.countDocuments({
+        role: 'user',
+        'creatorRequest.isApplied': true,
+        'creatorRequest.status': 'pending',
+      }),
+      Transaction.find({ status: 'completed' }).lean(),
+      Transaction.countDocuments({
+        status: 'completed',
+        createdAt: { $gte: twentyFourHoursAgo },
+      }),
+      Listing.countDocuments({
+        'promotion.ppc.isActive': true,
+        'promotion.ppc.ppcBalance': { $gt: 0 },
+      }),
+      Listing.countDocuments({
+        'promotion.boost.isActive': true,
+        'promotion.boost.expiresAt': { $gt: now },
+      }),
+      // ✅ নির্ভুলতার জন্য Analytics মডেল থেকে ভিউ এবং ক্লিকের সামারি আনা
+      Analytics.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalViews: { $sum: '$views' },
+            totalClicks: { $sum: '$clicks' },
+          },
+        },
+      ]),
+    ]);
+
+    // ১. ফিন্যান্সিয়াল ক্যালকুলেশন
+    let totalRevenue = 0;
+    let totalVat = 0;
+    let totalStripeFees = 0;
+
+    allTransactions.forEach((t) => {
+      const amount = Number(t.amountPaid) || 0;
+      const vat = Number(t.vatAmount) || 0;
+      totalRevenue += amount;
+      totalVat += vat;
+      if (amount > 0) {
+        // Stripe Fee: 2.9% + 0.30 EUR (Standard)
+        totalStripeFees += amount * 0.029 + 0.3;
+      }
+    });
+
+    const netProfit = totalRevenue - totalVat - totalStripeFees;
+
+    // ২. চার্টের জন্য গত ৭ দিনের ফিন্যান্সিয়াল ডাটা
+    const dailyFinance = await Transaction.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: sevenDaysAgo },
+          status: 'completed',
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          revenue: { $sum: '$amountPaid' },
+          vat: { $sum: '$vatAmount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // ৩. গত ৭ দিনের ভিউ/ক্লিক অ্যানালিটিক্স (গ্রাফের সাথে মিল রাখার জন্য)
+    const dailyStats = await Analytics.aggregate([
+      { $match: { date: { $gte: sevenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+          views: { $sum: '$views' },
+          clicks: { $sum: '$clicks' },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      cards: {
+        totalRevenue: totalRevenue.toFixed(2),
+        totalVat: totalVat.toFixed(2),
+        stripeFees: totalStripeFees.toFixed(2),
+        netProfit: netProfit.toFixed(2),
+        // ✅ এখন এটি সরাসরি Analytics মডেলের সাথে সিঙ্কড
+        totalViews: globalAnalytics[0]?.totalViews || 0,
+        totalClicks: globalAnalytics[0]?.totalClicks || 0,
+        recentPayments: recentPaymentsCount,
+        activePromotions: activePpcCount + activeBoostCount,
+        pendingListings,
+        pendingCreatorRequests: pendingRequests,
+        totalCreators,
+      },
+      charts: {
+        revenueFlow: dailyFinance.map((d) => ({
+          date: d._id,
+          revenue: Number(d.revenue.toFixed(2)),
+          profit: Number((d.revenue - d.vat - (d.revenue * 0.029 + d.count * 0.3)).toFixed(2)),
+        })),
+        // অতিরিক্ত ডাটা যা আপনি গ্রাফে দেখাতে পারেন
+        performanceFlow: dailyStats.map((s) => ({
+          date: s._id,
+          views: s.views,
+          clicks: s.clicks,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Admin Stats Error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };

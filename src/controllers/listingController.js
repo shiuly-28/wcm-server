@@ -7,13 +7,38 @@ import User from '../models/User.js';
 import mongoose from 'mongoose';
 import { calculateListingLevel } from '../utils/levelCalculator.js';
 import Analytics from '../models/Analytics.js';
+import InteractionLog from '../models/InteractionLog.js';
 
-const clickCooldowns = new Map();
-const viewCache = new Map();
+const applyPromotionLogic = (listing) => {
+  const now = new Date();
+
+  // ১. স্কোর ক্যালকুলেশন
+  const boostScore =
+    listing.promotion?.boost?.isActive && listing.promotion?.boost?.expiresAt > now ? 50 : 0;
+  const ppcScore =
+    listing.promotion?.ppc?.isActive && listing.promotion?.ppc?.ppcBalance > 0 ? 30 : 0;
+  const engagementScore = (listing.favorites?.length || 0) * 2;
+
+  const totalScore = boostScore + ppcScore + engagementScore;
+
+  // ২. লেভেল সেট করা
+  if (totalScore >= 70) listing.promotion.level = 3;
+  else if (totalScore >= 30) listing.promotion.level = 2;
+  else if (totalScore >= 5) listing.promotion.level = 1;
+  else listing.promotion.level = 0;
+
+  // ৩. প্রমোটেড স্ট্যাটাস আপডেট
+  listing.isPromoted = boostScore > 0 || ppcScore > 0;
+
+  return listing;
+};
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
-    const categories = await Category.find().sort({ order: 1 });
+    const [categories, regions] = await Promise.all([
+      Category.find().sort({ order: 1 }).lean(),
+      mongoose.model('Listing').distinct('region', { status: 'approved' }),
+    ]);
 
     const limit = parseInt(req.query.limit) || 10;
     const page = parseInt(req.query.page) || 1;
@@ -51,9 +76,12 @@ export const getCategoriesAndTags = async (req, res) => {
 
     const totalTags = await Tag.countDocuments();
 
+    const sortedRegions = regions.filter(Boolean).sort();
+
     res.status(200).json({
       success: true,
       categories: categories || [],
+      regions: sortedRegions || [],
       tags: tagsWithCount || [],
       pagination: {
         totalTags,
@@ -244,10 +272,25 @@ export const getPublicListings = async (req, res) => {
     if (creatorId) query.creatorId = creatorId;
 
     if (search) {
+      const [matchingTags, matchingCategories] = await Promise.all([
+        Tag.find({ title: { $regex: search, $options: 'i' } })
+          .select('_id')
+          .lean(),
+        Category.find({ title: { $regex: search, $options: 'i' } })
+          .select('_id')
+          .lean(),
+      ]);
+
+      const tagIds = matchingTags.map((t) => t._id);
+      const catIds = matchingCategories.map((c) => c._id);
+
       query.$or = [
         { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
         { country: { $regex: search, $options: 'i' } },
-        { tradition: { $regex: search, $options: 'i' } },
+        { region: { $regex: search, $options: 'i' } },
+        { culturalTags: { $in: tagIds } },
+        { category: { $in: catIds } },
       ];
     }
 
@@ -302,75 +345,140 @@ export const getPublicListings = async (req, res) => {
   }
 };
 
-export const handlePpcClick = async (req, res) => {
+export const getListingById = async (req, res) => {
   try {
-    const listingId = req.params.id;
-    const userIP =
-      req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
-    const cacheKey = `${userIP}_${listingId}`;
-    const now = Date.now();
+    const { id } = req.params;
+    const { deviceId } = req.query; 
+    const userId = req.user?._id;
+    const userAgent = req.headers['user-agent'] || 'unknown';
 
-    const listing = await Listing.findById(listingId);
-    if (!listing) return res.status(404).json({ message: 'Listing not found' });
+    const listing = await Listing.findById(id)
+      .populate('creatorId', 'firstName lastName username profile.profileImage')
+      .populate('category', 'title')
+      .populate('culturalTags', 'title image');
 
-    const lastClick = clickCooldowns.get(cacheKey);
-    const isSpam = lastClick && now - lastClick < 60000;
+    if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
-    const cost = listing.promotion?.ppc?.costPerClick || 0.1;
-    let wasCharged = false;
+    const viewQuery = { listingId: id, type: 'view' };
+    if (userId) {
+      viewQuery.userId = userId;
+    } else if (deviceId) {
+      viewQuery.deviceId = deviceId;
+    } else {
+      viewQuery.userAgent = userAgent;
+    }
 
-    if (
-      !isSpam &&
-      listing.isPromoted &&
-      listing.promotion?.ppc?.isActive &&
-      listing.promotion?.ppc?.ppcBalance >= cost
-    ) {
-      listing.promotion.ppc.ppcBalance = Number(
-        (listing.promotion.ppc.ppcBalance - cost).toFixed(2)
-      );
-      listing.promotion.ppc.totalClicks = (listing.promotion.ppc.totalClicks || 0) + 1;
+    const alreadyViewed = await InteractionLog.findOne(viewQuery);
 
-      if (listing.promotion.ppc.ppcBalance < cost) {
-        listing.promotion.ppc.isActive = false;
-        if (!listing.promotion?.boost?.isActive) {
-          listing.isPromoted = false;
-        }
-      }
+    if (!alreadyViewed) {
+      await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } });
+
+      await InteractionLog.create({
+        listingId: id,
+        userId: userId || null,
+        deviceId: deviceId || 'guest_device',
+        type: 'view',
+      });
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-
       await Analytics.findOneAndUpdate(
+        { listingId: id, date: today },
         {
-          listingId: listing._id,
-          creatorId: listing.creatorId,
-          date: today,
+          $inc: { views: 1 },
+          $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
         },
-        { $inc: { clicks: 1 } },
-        { upsert: true, new: true }
+        { upsert: true }
       );
+    }
+
+    res.status(200).json(listing);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const handlePpcClick = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { deviceId } = req.body;
+    const userId = req.user?._id;
+
+    if (!deviceId) return res.status(400).json({ message: 'Security token (deviceId) missing.' });
+
+    const listing = await Listing.findById(id);
+    if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+    // পিপিইউ একটিভ কি না চেক
+    if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
+      return res.status(200).json({ success: true, message: 'Organic click recorded.' });
+    }
+
+    // ডুপ্লিকেট ক্লিক চেক
+    const alreadyClicked = await InteractionLog.findOne({
+      listingId: id,
+      type: 'ppc_click',
+      $or: [{ deviceId: deviceId }, ...(userId ? [{ userId: userId }] : [])],
+    });
+
+    if (alreadyClicked) {
+      return res.status(200).json({ message: 'Duplicate click ignored.' });
+    }
+
+    const cost = listing.promotion.ppc.costPerClick || 0.1;
+
+    // ব্যালেন্স চেক এবং আপডেট
+    if (listing.promotion.ppc.ppcBalance >= cost) {
+      listing.promotion.ppc.ppcBalance = Number(
+        (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
+      );
+      listing.promotion.ppc.executedClicks += 1;
+
+      // ব্যালেন্স শেষ হয়ে গেলে রিসেট
+      if (listing.promotion.ppc.ppcBalance < cost) {
+        listing.promotion.ppc.isActive = false;
+        listing.promotion.ppc.ppcBalance = 0;
+        listing.promotion.ppc.amountPaid = 0;
+        listing.promotion.ppc.totalClicks = 0;
+        listing.promotion.ppc.executedClicks = 0;
+      }
+
+      // র‍্যাঙ্কিং লেভেল আপডেট (হেল্পার ফাংশন কল)
+      applyPromotionLogic(listing);
 
       await listing.save();
 
-      wasCharged = true;
+      // লগ তৈরি
+      await InteractionLog.create({
+        listingId: id,
+        userId: userId || null,
+        deviceId: deviceId,
+        type: 'ppc_click',
+      });
 
-      clickCooldowns.set(cacheKey, now);
-      setTimeout(() => clickCooldowns.delete(cacheKey), 300000);
+      // অ্যানালিটিক্স আপডেট
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      await Analytics.findOneAndUpdate(
+        { listingId: id, date: today },
+        {
+          $inc: { clicks: 1 },
+          $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+        },
+        { upsert: true }
+      );
+
+      return res.status(200).json({
+        success: true,
+        balance: listing.promotion.ppc.ppcBalance,
+        currentLevel: listing.promotion.level,
+      });
     }
 
-    res.status(200).json({
-      success: true,
-      redirectUrl: listing.websiteLink || '/',
-      charged: wasCharged,
-      message: isSpam
-        ? 'Spam protected (Not charged)'
-        : wasCharged
-          ? 'Valid PPC click'
-          : 'Click recorded (Not charged)',
-    });
+    res.status(400).json({ message: 'Insufficient PPC balance.' });
   } catch (error) {
     console.error('PPC Click Error:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -383,59 +491,6 @@ export const getCreatorListingCount = async (req, res) => {
     res.status(200).json({ count });
   } catch (err) {
     res.status(500).json(0);
-  }
-};
-
-export const getListingById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const clientIp =
-      req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
-    const cacheKey = `${id}-${clientIp}`;
-
-    const now = Date.now();
-    const cooldown = 24 * 60 * 60 * 1000;
-
-    let listing = await Listing.findById(id)
-      .populate('creatorId', 'username firstName lastName profile email')
-      .populate('category', 'title')
-      .populate('culturalTags', 'title image');
-
-    if (!listing) {
-      return res.status(404).json({ message: 'Listing not found' });
-    }
-
-    const lastViewed = viewCache.get(cacheKey);
-
-    if (!lastViewed || now - lastViewed > cooldown) {
-      listing.views = (listing.views || 0) + 1;
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      await Analytics.findOneAndUpdate(
-        {
-          listingId: listing._id,
-          creatorId: listing.creatorId,
-          date: today,
-        },
-        { $inc: { views: 1 } },
-        { upsert: true, new: true }
-      );
-
-      await listing.save();
-
-      viewCache.set(cacheKey, now);
-    }
-
-    res.status(200).json(listing);
-  } catch (error) {
-    console.error('Error fetching listing details:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch listing details',
-      error: error.message,
-    });
   }
 };
 
@@ -477,31 +532,40 @@ export const getMyListings = async (req, res) => {
 export const toggleFavorite = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
+    const userId = req.user?._id; // মিডলওয়্যার থেকে ইউজার আইডি
+
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
+    // ১. ফেভারিট অ্যাড বা রিমুভ করা
     const isFavorited = listing.favorites.includes(userId);
+
     if (isFavorited) {
       listing.favorites.pull(userId);
     } else {
       listing.favorites.addToSet(userId);
     }
 
-    listing.promotion.level = calculateListingLevel(listing);
+    // ২. প্রোমোশন লজিক এবং লেভেল আপডেট
+    // ফেভারিট কাউন্ট পরিবর্তনের ফলে র‍্যাঙ্কিং লেভেল অটোমেটিক আপডেট হবে
+    applyPromotionLogic(listing);
 
     await listing.save();
 
+    // ৩. রেসপন্স পাঠানো
     res.status(200).json({
+      success: true,
       message: isFavorited ? 'Removed from favorites' : 'Added to favorites',
       isFavorited: !isFavorited,
       favoritesCount: listing.favorites.length,
-      newLevel: listing.promotion.level,
+      newLevel: listing.promotion.level, // আপডেট হওয়া লেভেল
+      isPromoted: listing.isPromoted, // বুস্ট বা লেভেলের কারণে প্রমোটেড কি না
     });
   } catch (error) {
     console.error('Favorite Toggle Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 

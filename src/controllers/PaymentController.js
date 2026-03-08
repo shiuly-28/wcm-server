@@ -1,77 +1,81 @@
 import mongoose from 'mongoose';
 import Stripe from 'stripe';
+import axios from 'axios';
 import Transaction from '../models/Transaction.js';
 import Listing from '../models/Listing.js';
-import User from '../models/User.js';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { createAuditLog } from '../utils/logger.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// --- Ranking & Promotion Logic (Improved for Intensity) ---
-const applyPromotionLogic = (listing) => {
-  let boostScore = 0;
-  let ppcScore = 0;
+// --- Real-time Exchange Rate Helper ---
+const getExchangeRate = async (fromCurrency, toCurrency) => {
+  try {
+    const from = fromCurrency.toLowerCase();
+    const to = toCurrency.toLowerCase();
+    if (from === to) return 1;
 
-  if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > new Date()) {
-    const amount = listing.promotion.boost.amountPaid || 0;
-    const now = new Date();
-    const expiry = new Date(listing.promotion.boost.expiresAt);
-    const diffTime = Math.abs(expiry - now);
-    const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+    const response = await axios.get(
+      `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_RATE_API_KEY}/pair/${from}/${to}`
+    );
 
-    boostScore = (amount / daysLeft) * 10;
+    if (response.data && response.data.conversion_rate) {
+      return response.data.conversion_rate;
+    }
+    return 1;
+  } catch (error) {
+    console.error('Exchange Rate Error:', error.message);
+    return 1;
   }
-
-  if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
-    const cpc = listing.promotion.ppc.costPerClick || 0.1;
-
-    ppcScore = cpc * 150;
-  }
-
-  // ৩. Organic Engagement
-  const engagementScore = (listing.views || 0) * 0.05 + (listing.favorites?.length || 0) * 1;
-
-  listing.promotion.level = Math.floor(boostScore + ppcScore + engagementScore);
-
-  const hasActivePpc = listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0;
-  const hasActiveBoost =
-    listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > new Date();
-  listing.isPromoted = !!(hasActivePpc || hasActiveBoost);
-
-  return listing;
 };
 
-// --- Stripe Checkout ---
+// --- Create Checkout Session ---
 export const createCheckoutSession = async (req, res) => {
   try {
     const { listingId, packageType, amount, currency, currentPath, days, totalClicks } = req.body;
+
     const listing = await Listing.findById(listingId);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
-    if (
-      packageType === 'boost' &&
-      listing.promotion.boost.isActive &&
-      listing.promotion.boost.expiresAt > new Date()
-    ) {
-      return res.status(400).json({ message: 'This listing already has an active Viral Boost.' });
+    const now = new Date();
+
+    // --- প্রি-পেমেন্ট ভ্যালিডেশন (ডুপ্লিকেট প্রোমোশন চেক) ---
+    if (packageType === 'boost') {
+      // যদি অলরেডি একটিভ বুস্ট থাকে যার মেয়াদ শেষ হয়নি
+      if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
+        return res.status(400).json({
+          message: 'You already have an active Viral Boost for this listing.',
+        });
+      }
+    } else if (packageType === 'ppc') {
+      // যদি পিপিছি ব্যালেন্স এখনো থাকে
+      if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
+        return res.status(400).json({
+          message: 'You already have an active PPC balance. Please wait for it to finish.',
+        });
+      }
     }
 
-    const calculatedCPC =
-      packageType === 'ppc' ? (Number(amount) / Number(totalClicks)).toFixed(2) : 0;
+    const paymentCurrency = currency || 'eur';
 
+    // CPC ক্যালকুলেশন (এটি মেটাডাটায় যাবে)
+    const calculatedCPC =
+      packageType === 'ppc' ? (Number(amount) / Number(totalClicks)).toFixed(4) : '0';
+
+    // স্ট্রাইপ সেশন তৈরি
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
         {
           price_data: {
-            currency: currency || 'eur',
+            currency: paymentCurrency,
             product_data: {
               name: `${packageType.toUpperCase()} Promotion: ${listing.title}`,
               description:
                 packageType === 'boost'
-                  ? `Active for ${days} days`
-                  : `Credit for ${totalClicks} clicks`,
+                  ? `${days} Days Viral Boost`
+                  : `${totalClicks} Clicks Credit`,
             },
             unit_amount: Math.round(Number(amount) * 100),
           },
@@ -86,18 +90,58 @@ export const createCheckoutSession = async (req, res) => {
         packageType,
         days: days ? days.toString() : '0',
         totalClicks: totalClicks ? totalClicks.toString() : '0',
-        costPerClick: calculatedCPC.toString(),
+        originalCpc: calculatedCPC,
         creatorId: req.user._id.toString(),
       },
     });
 
     res.status(200).json({ url: session.url });
   } catch (error) {
-    res.status(500).json({ message: 'Payment initialization failed.' });
+    console.error('Stripe Session Error:', error);
+    res.status(500).json({ message: 'Could not initiate payment. Please try again.' });
   }
 };
 
-// --- Webhook with Retry Logic for WriteConflict ---
+const applyPromotionLogic = (listing, daysInput = null) => {
+  let boostScore = 0;
+  let ppcScore = 0;
+  const now = new Date();
+
+  // ১. Boost Intensity (টাকা / দিন)
+  if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
+    const amount = listing.promotion.boost.amountPaid || 0;
+    const expiry = new Date(listing.promotion.boost.expiresAt);
+
+    let daysDiff = daysInput;
+    if (!daysDiff) {
+      const diffTime = Math.abs(expiry - now);
+      daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+    }
+
+    boostScore = (amount / daysDiff) * 10;
+  }
+
+  // ২. PPC Priority (High CPC = High Level)
+  if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
+    const cpc = listing.promotion.ppc.costPerClick || 0.1;
+    const balance = listing.promotion.ppc.ppcBalance || 0;
+
+    // CPC কে ৩০০ গুণ গুরুত্ব দেওয়া হয়েছে
+    ppcScore = cpc * 300 + balance * 0.05;
+  }
+
+  // ৩. আপডেট
+  listing.promotion.level = Math.floor(boostScore + ppcScore);
+  listing.isPromoted = !!(
+    (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) ||
+    (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now)
+  );
+
+  if (!listing.isPromoted) listing.promotion.level = 0;
+
+  return listing;
+};
+
 export const handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -110,294 +154,239 @@ export const handleStripeWebhook = async (req, res) => {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const { listingId, packageType, creatorId, days, totalClicks } = session.metadata;
 
-    // Retry Logic for MongoDB Transactions
-    let retries = 3;
-    while (retries > 0) {
-      const dbSession = await mongoose.startSession();
-      dbSession.startTransaction();
-      try {
-        const amountPaid = session.amount_total / 100;
-        const fxRate = session.currency === 'usd' ? 0.92 : 1;
-        const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
+    // স্ট্রাইপ থেকে লাইন আইটেম এবং ট্যাক্স ডিটেইলস নিয়ে আসা
+    const expandedSession = await stripe.checkout.sessions.retrieve(session.id, {
+      expand: ['total_details.breakdown.taxes'],
+    });
 
-        // ১. ট্রানজেকশন রেকর্ড
-        await Transaction.create(
-          [
-            {
-              creator: creatorId,
-              listing: listingId,
-              stripeSessionId: session.id,
-              amountPaid,
-              currency: session.currency,
-              fxRate,
-              amountInEUR,
-              packageType,
-              status: 'completed',
-              invoiceNumber: `INV-${Date.now()}`,
-            },
-          ],
-          { session: dbSession }
-        );
+    const { listingId, packageType, creatorId, days, totalClicks, originalCpc } = session.metadata;
 
-        // ২. লিস্টিং আপডেট
-        const listing = await Listing.findById(listingId).session(dbSession);
-        if (!listing) throw new Error('Listing not found');
+    const dbSession = await mongoose.startSession();
+    dbSession.startTransaction();
 
-        if (packageType === 'boost') {
-          listing.promotion.boost.isActive = true;
-          listing.promotion.boost.amountPaid = amountInEUR;
-          const expiry = new Date();
-          expiry.setDate(expiry.getDate() + parseInt(days));
-          listing.promotion.boost.expiresAt = expiry;
-        } else if (packageType === 'ppc') {
-          listing.promotion.ppc.isActive = true;
-          listing.promotion.ppc.ppcBalance = Number(
-            ((listing.promotion.ppc.ppcBalance || 0) + amountInEUR).toFixed(2)
-          );
-          listing.promotion.ppc.amountPaid = (listing.promotion.ppc.amountPaid || 0) + amountInEUR;
+    try {
+      const listing = await Listing.findById(listingId).session(dbSession);
+      if (!listing) throw new Error('Listing not found');
 
-          // এখানে CPC ক্যালকুলেট হচ্ছে (বেশি টাকা / কম ক্লিক = High CPC)
-          const newCPC = Number((amountInEUR / parseInt(totalClicks)).toFixed(2));
-          listing.promotion.ppc.costPerClick = newCPC;
-          listing.promotion.ppc.totalClicks =
-            (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
-        }
+      // পেমেন্ট ডাটা প্রসেসিং
+      const amountPaid = session.amount_total / 100; // অরিজিনাল কারেন্সি (যেমন USD)
+      const paymentCurrency = session.currency.toUpperCase();
+      const targetCurrency = process.env.INTERNAL_CURRENCY || 'EUR';
 
-        // ৩. ইনটেনসিটি লজিক অ্যাপ্লাই
-        applyPromotionLogic(listing);
+      // রিয়েল-টাইম এক্সচেঞ্জ রেট কল
+      const fxRate = await getExchangeRate(paymentCurrency, targetCurrency);
+      const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
 
-        await listing.save({ session: dbSession });
-        await dbSession.commitTransaction();
-        break; // সফল হলে লুপ থেকে বের হয়ে যাবে
-      } catch (error) {
-        await dbSession.abortTransaction();
-        retries--;
-        if (error.code === 112 && retries > 0) {
-          console.log(`WriteConflict detected. Retrying... (${retries} left)`);
-          await new Promise((res) => setTimeout(res, 500)); // ০.৫ সেকেন্ড ওয়েট
-        } else {
-          console.error('Webhook Final Error:', error);
-          break;
-        }
-      } finally {
-        dbSession.endSession();
+      // --- রিয়েল ভ্যাট ক্যালকুলেশন ---
+      // স্ট্রাইপ যদি ট্যাক্স অটো-ক্যালকুলেট করে থাকে তবে সেটি নেবে,
+      // নাহলে পেমেন্ট গেটওয়ের স্ট্যান্ডার্ড হিসেবে অ্যামাউন্ট থেকে ক্যালকুলেট করবে।
+      let vatAmount = 0;
+      if (
+        expandedSession.total_details.breakdown &&
+        expandedSession.total_details.breakdown.taxes.length > 0
+      ) {
+        vatAmount = expandedSession.total_details.breakdown.taxes[0].amount / 100;
+      } else {
+        // যদি স্ট্রাইপ ট্যাক্স না পাঠায়, তবে ইন্টারনাল কারেন্সি রেট অনুযায়ী ভ্যাট বের করা (১৯% স্ট্যান্ডার্ড হিসেবে ধরে)
+        // কিন্তু এটি ডাটাবেসে সেভ হয়ে যাবে তাই ভবিষ্যতে রেট বদলালেও সমস্যা নেই।
+        vatAmount = Number((amountPaid - amountPaid / 1.19).toFixed(2));
       }
+
+      // ট্রানজেকশন রেকর্ড (এখুনি ডাটা ফ্রিজ করে দেওয়া হচ্ছে)
+      const transaction = await Transaction.create(
+        [
+          {
+            creator: creatorId,
+            listing: listingId,
+            stripeSessionId: session.id,
+            amountPaid, // রিয়েল পেইড অ্যামাউন্ট (যেমন ১০০ USD)
+            currency: session.currency,
+            fxRate,
+            amountInEUR,
+            packageType,
+            status: 'completed',
+            invoiceNumber: `INV-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+            vatAmount, // রিয়েল ভ্যাট যা পেমেন্টের সময় কাটা হয়েছে
+          },
+        ],
+        { session: dbSession }
+      );
+
+      // --- ডাটা আপডেট লজিক ---
+      if (packageType === 'boost') {
+        listing.promotion.boost.isActive = true;
+        listing.promotion.boost.amountPaid = amountInEUR;
+        const expiry = new Date();
+        expiry.setDate(expiry.getDate() + parseInt(days));
+        listing.promotion.boost.expiresAt = expiry;
+      } else if (packageType === 'ppc') {
+        listing.promotion.ppc.isActive = true;
+        listing.promotion.ppc.ppcBalance = amountInEUR;
+        listing.promotion.ppc.amountPaid = amountInEUR;
+        listing.promotion.ppc.totalClicks = parseInt(totalClicks);
+        listing.promotion.ppc.executedClicks = 0;
+
+        const cpcInEUR = Number((Number(originalCpc) * fxRate).toFixed(4));
+        listing.promotion.ppc.costPerClick = cpcInEUR;
+      }
+
+      applyPromotionLogic(listing, parseInt(days) || null);
+      await listing.save({ session: dbSession });
+
+      await createAuditLog({
+        req,
+        user: creatorId, // সরাসরি পাস করা হলো
+        action: 'PROMOTION_PURCHASED',
+        targetType: 'Transaction',
+        targetId: transaction[0]._id,
+        details: {
+          listingTitle: listing.title,
+          packageType: packageType, // 'boost' or 'ppc'
+          amountPaid: `${amountPaid} ${paymentCurrency}`,
+          amountInEUR: `${amountInEUR} EUR`,
+          status: 'Success',
+          message: `Creator purchased ${packageType.toUpperCase()} for "${listing.title}"`,
+        },
+      });
+
+      await dbSession.commitTransaction();
+
+      console.log(`[Webhook] Success. Transaction saved with VAT: ${vatAmount}`);
+    } catch (error) {
+      await dbSession.abortTransaction();
+      console.error('❌ Webhook Logic Error:', error.message);
+    } finally {
+      dbSession.endSession();
     }
   }
   res.json({ received: true });
-};
-
-// --- Wallet Payment (Fixed fxRate Bug) ---
-export const payWithWallet = async (req, res) => {
-  const dbSession = await mongoose.startSession();
-  dbSession.startTransaction();
-  try {
-    const { listingId, packageType, amount, days, totalClicks } = req.body;
-    const userId = req.user._id;
-
-    const listing = await Listing.findById(listingId).session(dbSession);
-    if (
-      packageType === 'boost' &&
-      listing.promotion.boost.isActive &&
-      listing.promotion.boost.expiresAt > new Date()
-    ) {
-      throw new Error('Listing already has an active Viral Boost.');
-    }
-
-    const user = await User.findById(userId).session(dbSession);
-    if (!user || user.walletBalance < amount) throw new Error('Insufficient wallet balance.');
-
-    user.walletBalance = Number((user.walletBalance - amount).toFixed(2));
-    await user.save({ session: dbSession });
-
-    const amountNum = Number(amount);
-
-    await Transaction.create(
-      [
-        {
-          creator: userId,
-          listing: listingId,
-          stripeSessionId: `WALLET-${Date.now()}`,
-          amountPaid: amountNum,
-          currency: 'eur',
-          fxRate: 1, // 🔹 Wallet is 1:1 EUR
-          amountInEUR: amountNum,
-          packageType,
-          status: 'completed',
-          invoiceNumber: `INV-W-${Date.now()}`,
-        },
-      ],
-      { session: dbSession }
-    );
-
-    if (packageType === 'boost') {
-      listing.promotion.boost.isActive = true;
-      listing.promotion.boost.amountPaid = amountNum;
-      const expiry = new Date();
-      expiry.setDate(expiry.getDate() + parseInt(days));
-      listing.promotion.boost.expiresAt = expiry;
-    } else {
-      listing.promotion.ppc.isActive = true;
-      listing.promotion.ppc.ppcBalance = Number(
-        ((listing.promotion.ppc.ppcBalance || 0) + amountNum).toFixed(2)
-      );
-      listing.promotion.ppc.amountPaid = (listing.promotion.ppc.amountPaid || 0) + amountNum;
-      listing.promotion.ppc.costPerClick = Number((amountNum / parseInt(totalClicks)).toFixed(2));
-      listing.promotion.ppc.totalClicks =
-        (listing.promotion.ppc.totalClicks || 0) + parseInt(totalClicks);
-    }
-
-    applyPromotionLogic(listing);
-    await listing.save({ session: dbSession });
-    await dbSession.commitTransaction();
-    res.status(200).json({ success: true, message: 'Promotion activated!' });
-  } catch (error) {
-    await dbSession.abortTransaction();
-    res.status(400).json({ message: error.message });
-  } finally {
-    dbSession.endSession();
-  }
 };
 
 export const generateInvoice = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const BUSINESS_NAME = process.env.BUSINESS_NAME || 'World Culture Marketplace';
-    const BUSINESS_ADDRESS = process.env.BUSINESS_ADDRESS || '123 Culture Street, Berlin, Germany';
-    const BUSINESS_VAT_NUMBER = process.env.BUSINESS_VAT_NUMBER || 'DE123456789';
-    const DEFAULT_VAT_RATE = process.env.DEFAULT_VAT_RATE || 19;
-
     const transaction = await Transaction.findById(id)
-      .populate('creator', 'firstName lastName email')
+      .populate('creator', 'firstName lastName email profile role')
       .populate('listing', 'title');
 
     if (!transaction) {
-      return res.status(404).json({ message: 'Transaction record not found' });
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // --- Authorization Check ---
+    // Admin can see all, Creator can only see their own
+    const isAdmin = req.user.role === 'admin';
+    const isOwner = transaction.creator._id.toString() === req.user._id.toString();
+
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ message: 'Unauthorized access to this invoice' });
     }
 
     const doc = new jsPDF();
-    const brandOrange = [249, 115, 22];
+    const totalPaid = transaction.amountPaid;
+    const vatAmount = transaction.vatAmount || 0;
+    const netAmount = totalPaid - vatAmount;
+    const currency = transaction.currency.toUpperCase();
 
-    // --- Header ---
-    doc.setFillColor(...brandOrange);
+    // Calculate VAT percentage
+    const vatRatePercent = netAmount > 0 ? ((vatAmount / netAmount) * 100).toFixed(2) : '0.00';
+
+    // --- Header Style ---
+    doc.setFillColor(249, 115, 22); // Orange Theme
     doc.rect(0, 0, 210, 40, 'F');
-
-    doc.setFontSize(24);
     doc.setTextColor(255, 255, 255);
+    doc.setFontSize(22);
     doc.setFont('helvetica', 'bold');
-    doc.text('INVOICE', 14, 25);
+    doc.text('OFFICIAL INVOICE', 15, 25);
 
-    // --- Meta Info ---
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    const invNo =
-      transaction.invoiceNumber || `INV-${transaction._id.toString().slice(-6).toUpperCase()}`;
-    doc.text(`Invoice Number: ${invNo}`, 145, 18);
-    doc.text(`Date Issued: ${new Date(transaction.createdAt).toLocaleDateString()}`, 145, 24);
-    doc.text(`Payment Status: PAID`, 145, 30);
-
-    // --- Business & Client Details ---
-    doc.setTextColor(0, 0, 0);
     doc.setFontSize(10);
+    doc.text(process.env.BUSINESS_NAME || 'YOUR BUSINESS NAME', 195, 25, { align: 'right' });
 
-    // Company Side
+    // --- Details Section ---
+    doc.setTextColor(40, 40, 40);
+    doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
-    doc.text('FROM:', 14, 50);
+    doc.text(`Invoice No:`, 15, 55);
     doc.setFont('helvetica', 'normal');
-    doc.text(BUSINESS_NAME, 14, 56);
-    doc.text(BUSINESS_ADDRESS, 14, 62);
-    doc.text(`VAT: ${BUSINESS_VAT_NUMBER}`, 14, 68);
+    doc.text(transaction.invoiceNumber || `INV-${transaction._id.toString().slice(-6)}`, 40, 55);
 
-    // Client Side
+    // Added Date & Time
+    const formattedDate = new Date(transaction.createdAt).toLocaleString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    doc.text(`Date & Time: ${formattedDate}`, 15, 62);
+
+    // Bill To
     doc.setFont('helvetica', 'bold');
-    doc.text('BILL TO:', 120, 50);
+    doc.text('Bill To:', 140, 55);
     doc.setFont('helvetica', 'normal');
-    doc.text(`${transaction.creator?.firstName} ${transaction.creator?.lastName}`, 120, 56);
-    doc.text(transaction.creator?.email || 'N/A', 120, 62);
+    doc.text(`${transaction.creator.firstName} ${transaction.creator.lastName}`, 140, 62);
+    doc.text(transaction.creator.email, 140, 68);
 
-    // --- Calculations ---
-    const totalAmount = transaction.amountPaid || 0;
-    const netAmount = totalAmount / (1 + DEFAULT_VAT_RATE / 100);
-    const vatAmount = totalAmount - netAmount;
-
-    // --- Items Table ---
+    // --- Table ---
     autoTable(doc, {
       startY: 80,
-      head: [['Service Description', 'Type', 'Net Amount', 'VAT', 'Total']],
+      head: [['Service Description', 'Net Price', 'VAT Amount', 'Total']],
       body: [
         [
-          `Promotion: ${transaction.listing?.title || 'Culture Asset'}`,
-          transaction.packageType.toUpperCase(),
-          `${transaction.currency.toUpperCase()} ${netAmount.toFixed(2)}`,
-          `${DEFAULT_VAT_RATE}%`,
-          `${transaction.currency.toUpperCase()} ${totalAmount.toFixed(2)}`,
+          {
+            content: `${transaction.packageType.toUpperCase()} Promotion\nAsset: ${transaction.listing?.title || 'N/A'}`,
+            styles: { cellPadding: 5 },
+          },
+          `${netAmount.toFixed(2)} ${currency}`,
+          `${vatAmount.toFixed(2)} (${vatRatePercent}%)`,
+          `${totalPaid.toFixed(2)} ${currency}`,
         ],
       ],
-      headStyles: {
-        fillColor: brandOrange,
-        textColor: [255, 255, 255],
-        fontStyle: 'bold',
-      },
-      styles: { fontSize: 9, cellPadding: 4 },
-      columnStyles: {
-        4: { halign: 'right', fontStyle: 'bold' },
-      },
+      headStyles: { fillColor: [30, 30, 30], fontStyle: 'bold' },
+      styles: { fontSize: 9, valign: 'middle' },
+      theme: 'grid',
     });
 
-    // --- Totals Summary ---
-    const finalY = doc.lastAutoTable.finalY + 10;
+    const finalY = doc.lastAutoTable.finalY + 15;
 
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text('Subtotal (Net):', 140, finalY);
-    doc.text(`${transaction.currency.toUpperCase()} ${netAmount.toFixed(2)}`, 196, finalY, {
-      align: 'right',
-    });
-
-    doc.text(`VAT (${DEFAULT_VAT_RATE}%):`, 140, finalY + 6);
-    doc.text(`${transaction.currency.toUpperCase()} ${vatAmount.toFixed(2)}`, 196, finalY + 6, {
-      align: 'right',
-    });
-
-    doc.setLineWidth(0.5);
-    doc.line(140, finalY + 10, 196, finalY + 10);
-
-    doc.setFont('helvetica', 'bold');
+    // --- Summary Section ---
     doc.setFontSize(12);
-    doc.text('Total Paid:', 140, finalY + 18);
-    doc.text(`${transaction.currency.toUpperCase()} ${totalAmount.toFixed(2)}`, 196, finalY + 18, {
-      align: 'right',
-    });
+    doc.setFont('helvetica', 'bold');
+    doc.text('Total Amount Paid:', 130, finalY);
+    doc.text(`${totalPaid.toFixed(2)} ${currency}`, 195, finalY, { align: 'right' });
+
+    // --- Exchange Rate Info (If not EUR) ---
+    if (currency !== 'EUR') {
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'italic');
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Exchange Rate Info: 1 ${currency} = ${transaction.fxRate} EUR.`, 15, finalY + 10);
+      doc.text(
+        `Internal Accounting Total: ${transaction.amountInEUR.toFixed(2)} EUR`,
+        15,
+        finalY + 15
+      );
+    }
 
     // --- Footer ---
-    const pageHeight = doc.internal.pageSize.height;
     doc.setFontSize(8);
-    doc.setFont('helvetica', 'italic');
     doc.setTextColor(150, 150, 150);
-    doc.text(
-      'This is a computer-generated document. No signature is required.',
-      105,
-      pageHeight - 20,
-      { align: 'center' }
-    );
-    doc.text('Thank you for choosing World Culture Marketplace!', 105, pageHeight - 15, {
+    doc.text('This is a computer-generated document. No signature is required.', 105, 285, {
       align: 'center',
     });
 
-    // --- Finalize and Send ---
     const pdfBuffer = doc.output('arraybuffer');
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename=Invoice-${invNo}.pdf`);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename=Invoice-${transaction.invoiceNumber}.pdf`
+    );
     res.send(Buffer.from(pdfBuffer));
-  } catch (error) {
-    console.error('Invoice Generation Error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to generate invoice',
-      error: error.message,
-    });
+  } catch (err) {
+    console.error('Invoice Gen Error:', err);
+    res.status(500).json({ message: 'Error generating PDF invoice' });
   }
 };

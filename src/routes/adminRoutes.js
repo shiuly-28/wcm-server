@@ -18,7 +18,8 @@ import {
   updateCategoryOrder,
   getAllTransactions,
   exportTransactionsExcel,
-  updatePpcBalanceManual
+  updatePpcBalanceManual,
+  getPromotedListings,
 } from '../controllers/adminController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 import upload from '../config/multer.js';
@@ -32,6 +33,7 @@ router.get('/stats', getAdminStats);
 router.get('/transactions', getAllTransactions);
 router.get('/export-transactions', exportTransactionsExcel);
 router.get('/listings', manageListings);
+router.get('/promoted-listings', getPromotedListings);
 router.get('/users', getAllUsers);
 router.get('/creator-requests', getCreatorRequests);
 router.get('/export-users', exportUsersExcel);

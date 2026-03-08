@@ -27,6 +27,7 @@ router.get('/profile/:id', getPublicProfile);
 
 router.put(
   '/update-profile',
+
   authMiddleware,
   upload.fields([
     { name: 'profileImage', maxCount: 1 },
