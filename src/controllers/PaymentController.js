@@ -501,6 +501,76 @@ export const handleStripeWebhook = async (req, res) => {
   res.json({ received: true });
 };
 
+// --- Refund/Cancel Active Promotion ---
+export const cancelPromotion = async (req, res) => {
+  const { listingId, packageType } = req.body;
+  const userId = req.user._id;
+
+  try {
+    // সেশন ছাড়া সরাসরি ডাটাবেস থেকে ডেটা আনা
+    const listing = await Listing.findById(listingId);
+    const user = await User.findById(userId);
+
+    if (!listing || listing.creatorId.toString() !== userId.toString()) {
+      return res.status(404).json({ message: 'Listing not found or unauthorized' });
+    }
+
+    let refundAmount = 0;
+    const now = new Date();
+
+    if (packageType === 'boost' && listing.promotion.boost.isActive) {
+      const expiry = new Date(listing.promotion.boost.expiresAt);
+      if (expiry > now) {
+        const totalAmount = listing.promotion.boost.amountPaid;
+        const remainingTime = expiry.getTime() - now.getTime();
+        const remainingDays = Math.max(0, remainingTime / (1000 * 60 * 60 * 24));
+        
+        // রিফান্ড ক্যালকুলেশন (বাকি দিন অনুযায়ী)
+        refundAmount = Number(((totalAmount / 30) * remainingDays).toFixed(2)); 
+        
+        listing.promotion.boost.isActive = false;
+        listing.promotion.boost.expiresAt = now;
+      }
+    } else if (packageType === 'ppc' && listing.promotion.ppc.isActive) {
+      refundAmount = listing.promotion.ppc.ppcBalance;
+      listing.promotion.ppc.ppcBalance = 0;
+      listing.promotion.ppc.isActive = false;
+    }
+
+    if (refundAmount > 0) {
+      user.walletBalance = Number((user.walletBalance + refundAmount).toFixed(2));
+      await user.save();
+
+      // ট্রানজেকশন রেকর্ড তৈরি (মডেলের রিকোয়ার্ড ফিল্ড অনুযায়ী)
+      await Transaction.create({
+        creator: userId,
+        listing: listingId,
+        amountPaid: -refundAmount,
+        amountInEUR: -refundAmount, // এটি রিকোয়ার্ড ছিল
+        currency: 'EUR',
+        fxRate: 1,
+        stripeSessionId: `REFUND-${Date.now()}-${listingId.toString().slice(-4)}`,
+        packageType: `refund_${packageType}`, // মডেলের enum-এ এটি থাকতে হবে
+        status: 'completed',
+        invoiceNumber: `RFD-${Date.now()}`,
+      });
+    }
+
+    // প্রোমোশন লজিক পুনরায় অ্যাপ্লাই করে সেভ করা
+    applyPromotionLogic(listing);
+    await listing.save();
+
+    res.status(200).json({ 
+      success: true, 
+      refundAmount, 
+      newBalance: user.walletBalance 
+    });
+  } catch (error) {
+    console.error("Cancel Promotion Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const generateInvoice = async (req, res) => {
   try {
     const { id } = req.params;
