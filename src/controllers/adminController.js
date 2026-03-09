@@ -321,10 +321,25 @@ export const updateListingStatus = async (req, res) => {
   }
 };
 
+export const updateCategoryOrder = async (req, res) => {
+  try {
+    const { categories } = req.body;
+
+    const updatePromises = categories.map((cat, index) => {
+      return Category.findByIdAndUpdate(cat._id, { order: index });
+    });
+
+    await Promise.all(updatePromises);
+
+    res.status(200).json({ message: 'Order updated successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const exportUsersExcel = async (req, res) => {
   try {
     const userCursor = User.find({}).select('-password').cursor();
-
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('System All Users');
 
@@ -348,7 +363,6 @@ export const exportUsersExcel = async (req, res) => {
     };
 
     let count = 0;
-
     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
       const profile = user.profile || {};
       const creatorRequest = user.creatorRequest || {};
@@ -369,8 +383,6 @@ export const exportUsersExcel = async (req, res) => {
       count++;
     }
 
-    console.log(`Exported ${count} users to Excel.`);
-
     const fileName = `WCM_All_Users_${new Date().toISOString().split('T')[0]}.xlsx`;
 
     res.setHeader(
@@ -380,26 +392,10 @@ export const exportUsersExcel = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
 
     await workbook.xlsx.write(res);
-    return res.status(200).end();
+    return res.end();
   } catch (error) {
     console.error('EXPORT ERROR:', error);
-    if (!res.headersSent) res.status(500).send('Export failed');
-  }
-};
-
-export const updateCategoryOrder = async (req, res) => {
-  try {
-    const { categories } = req.body;
-
-    const updatePromises = categories.map((cat, index) => {
-      return Category.findByIdAndUpdate(cat._id, { order: index });
-    });
-
-    await Promise.all(updatePromises);
-
-    res.status(200).json({ message: 'Order updated successfully' });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+    if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 };
 
@@ -436,7 +432,6 @@ export const exportTransactionsExcel = async (req, res) => {
     };
 
     let count = 0;
-
     for (let tx = await transactionCursor.next(); tx != null; tx = await transactionCursor.next()) {
       worksheet.addRow({
         createdAt: tx.createdAt ? tx.createdAt.toISOString().split('T')[0] : 'N/A',
@@ -449,14 +444,12 @@ export const exportTransactionsExcel = async (req, res) => {
         currency: (tx.currency || '').toUpperCase(),
         amountPaid: tx.amountPaid,
         fxRate: tx.fxRate,
-        amountInEUR: tx.amountInEUR.toFixed(2),
-        vatAmount: tx.vatAmount.toFixed(2),
+        amountInEUR: (tx.amountInEUR || 0).toFixed(2),
+        vatAmount: (tx.vatAmount || 0).toFixed(2),
         stripeSessionId: tx.stripeSessionId,
       });
       count++;
     }
-
-    console.log(`Exported ${count} transactions to Excel.`);
 
     const fileName = `Payment_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
 
@@ -467,10 +460,10 @@ export const exportTransactionsExcel = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
 
     await workbook.xlsx.write(res);
-    return res.status(200).end();
+    return res.end();
   } catch (error) {
     console.error('TRANSACTION EXPORT ERROR:', error);
-    if (!res.headersSent) res.status(500).send('Export failed');
+    if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 };
 
