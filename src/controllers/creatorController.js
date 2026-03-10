@@ -5,20 +5,53 @@ import Analytics from '../models/Analytics.js';
 
 export const getMyTransactions = async (req, res) => {
   try {
-    const transactions = await Transaction.find({ creator: req.user._id })
+    const { page = 1, limit = 10, filter = 'all', search = '' } = req.query;
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    // ১. কোয়েরি ফিল্টার (শুধুমাত্র নিজের ট্রানজেকশন)
+    let query = { creator: req.user._id, status: 'completed' };
+
+    // ২. ডেট ফিল্টারিং
+    const now = new Date();
+    if (filter === 'today') {
+      query.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
+    } else if (filter === 'month') {
+      query.createdAt = { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
+    } else if (filter === 'year') {
+      query.createdAt = { $gte: new Date(now.getFullYear(), 0, 1) };
+    }
+
+    // ৩. ইনভয়েস নম্বর দিয়ে সার্চ (যদি থাকে)
+    if (search) {
+      query.invoiceNumber = { $regex: search, $options: 'i' };
+    }
+
+    // ৪. ডাটা ফেচ করা
+    const transactions = await Transaction.find(query)
       .populate('listing', 'title image')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .limit(Number(limit))
+      .skip(skip)
+      .lean();
+
+    const totalCount = await Transaction.countDocuments(query);
 
     res.status(200).json({
       success: true,
-      count: transactions.length,
       transactions,
+      pagination: {
+        total: totalCount,
+        page: Number(page),
+        pages: Math.ceil(totalCount / limit),
+      },
     });
   } catch (error) {
     console.error('Transaction Fetch Error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch transactions',
+      error: error.message,
     });
   }
 };

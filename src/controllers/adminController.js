@@ -468,11 +468,104 @@ export const exportTransactionsExcel = async (req, res) => {
   }
 };
 
+// export const getAllTransactions = async (req, res) => {
+//   try {
+//     const { page = 1, limit = 10 } = req.query;
+
+//     let query = { status: 'completed' };
+
+//     const transactions = await Transaction.find(query)
+//       .populate('creator', 'firstName lastName email username')
+//       .populate('listing', 'title')
+//       .sort({ createdAt: -1 })
+//       .limit(limit * 1)
+//       .skip((page - 1) * limit)
+//       .lean();
+
+//     const count = await Transaction.countDocuments(query);
+
+//     const formattedTransactions = transactions.map((tx) => {
+//       const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
+
+//       return {
+//         _id: tx._id,
+//         userId: tx.creator?._id || 'N/A',
+//         creatorName: tx.creator ? `${tx.creator.firstName} ${tx.creator.lastName}` : 'Unknown',
+//         creatorEmail: tx.creator?.email,
+//         listingId: tx.listing?._id || 'N/A',
+//         listingTitle: tx.listing?.title || 'Deleted Listing',
+//         type: tx.packageType,
+//         amount: tx.amountPaid,
+//         currency: (tx.currency || 'EUR').toUpperCase(),
+//         netAmount: Number(netAmount.toFixed(2)),
+//         vatAmount: tx.vatAmount || 0,
+//         fxRate: tx.fxRate || 1,
+//         amountInEUR: tx.amountInEUR || 0,
+//         invoiceNumber: tx.invoiceNumber || 'N/A',
+//         stripeId: tx.stripeSessionId,
+//         createdAt: tx.createdAt,
+//       };
+//     });
+
+//     res.status(200).json({
+//       success: true,
+//       transactions: formattedTransactions,
+//       totalPages: Math.ceil(count / limit),
+//       currentPage: Number(page),
+//       totalCount: count,
+//     });
+//   } catch (error) {
+//     console.error('GetAllTransactions Error:', error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
+
 export const getAllTransactions = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      filter = 'all', // all, today, month, year
+    } = req.query;
 
     let query = { status: 'completed' };
+
+    // --- ১. ডেট ফিল্টারিং লজিক ---
+    const now = new Date();
+    if (filter === 'today') {
+      const startOfToday = new Date(now.setHours(0, 0, 0, 0));
+      query.createdAt = { $gte: startOfToday };
+    } else if (filter === 'month') {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      query.createdAt = { $gte: startOfMonth };
+    } else if (filter === 'year') {
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+      query.createdAt = { $gte: startOfYear };
+    }
+
+    // --- ২. গ্লোবাল সার্চ লজিক ---
+    if (search) {
+      // ইউজারের নাম বা ইমেইল দিয়ে সার্চ করার জন্য প্রথমে ইউজারদের খুঁজে বের করা
+      const users = await User.find({
+        $or: [
+          { firstName: { $regex: search, $options: 'i' } },
+          { lastName: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { username: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+
+      const userIds = users.map((u) => u._id);
+
+      // ট্রানজেকশন টেবিলে সার্চ (Invoice, Package Type বা User ID দিয়ে)
+      query.$or = [
+        { invoiceNumber: { $regex: search, $options: 'i' } },
+        { packageType: { $regex: search, $options: 'i' } },
+        { stripeSessionId: { $regex: search, $options: 'i' } },
+        { creator: { $in: userIds } },
+      ];
+    }
 
     const transactions = await Transaction.find(query)
       .populate('creator', 'firstName lastName email username')
@@ -484,6 +577,7 @@ export const getAllTransactions = async (req, res) => {
 
     const count = await Transaction.countDocuments(query);
 
+    // --- ৩. ডাটা ফরম্যাটিং ---
     const formattedTransactions = transactions.map((tx) => {
       const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
 
@@ -507,12 +601,20 @@ export const getAllTransactions = async (req, res) => {
       };
     });
 
+    // সামারি স্ট্যাট (ঐচ্ছিক কিন্তু অ্যাডমিনের জন্য দরকারি)
+    const totalRevenue = formattedTransactions.reduce((acc, curr) => acc + curr.amountInEUR, 0);
+
     res.status(200).json({
       success: true,
       transactions: formattedTransactions,
-      totalPages: Math.ceil(count / limit),
-      currentPage: Number(page),
-      totalCount: count,
+      pagination: {
+        totalCount: count,
+        totalPages: Math.ceil(count / limit),
+        currentPage: Number(page),
+      },
+      stats: {
+        totalEURInPage: Number(totalRevenue.toFixed(2)),
+      },
     });
   } catch (error) {
     console.error('GetAllTransactions Error:', error);
