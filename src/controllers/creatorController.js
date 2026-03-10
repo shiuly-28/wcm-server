@@ -97,26 +97,32 @@ export const getCreatorDashboardStats = async (req, res) => {
   try {
     const creatorId = req.user._id;
     const now = new Date();
+    // ফ্রন্টএন্ড থেকে ?refresh=true পাঠালে ক্যাশ ইগনোর করবে
+    const isForceRefresh = req.query.refresh === 'true';
 
-    // ১. ডাটাবেস থেকে ইউজার এবং ক্যাশ চেক
+    // ১. ইউজার ডাটা আনা
     const user = await User.findById(creatorId).select('dashboardStats walletBalance');
 
     const lastUpdate = user?.dashboardStats?.lastUpdated
       ? new Date(user.dashboardStats.lastUpdated)
       : null;
+
+    // ক্যাশ ভ্যালিডেশন (২৪ ঘণ্টা অথবা ফোর্স রিফ্রেশ না হওয়া পর্যন্ত)
     const isCacheExpired = !lastUpdate || now - lastUpdate > 24 * 60 * 60 * 1000;
 
-    // ২. ক্যাশ ভ্যালিড থাকলে রিটার্ন
-    if (!isCacheExpired && user?.dashboardStats?.data) {
+    // ২. ক্যাশ রিটার্ন (যদি ফোর্স রিফ্রেশ না থাকে এবং ক্যাশ এক্সপায়ার না হয়)
+    if (!isForceRefresh && !isCacheExpired && user?.dashboardStats?.data) {
       return res.status(200).json({
         success: true,
         stats: user.dashboardStats.data.stats,
         chartData: user.dashboardStats.data.chartData,
+        walletBalance: user.walletBalance.toFixed(2), // লেটেস্ট ওয়ালেট ব্যালেন্স সবসময় পাঠাবে
         isCached: true,
+        lastUpdated: lastUpdate,
       });
     }
 
-    // ৩. নতুন ক্যালকুলেশন শুরু
+    // ৩. নতুন ক্যালকুলেশন শুরু (Refresh Logic)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setHours(0, 0, 0, 0);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
@@ -157,7 +163,6 @@ export const getCreatorDashboardStats = async (req, res) => {
       0
     );
 
-    // ফিল্টারিং লজিক
     const stats = {
       totalViews: lifetimeViews,
       totalMonthlySpend: totalMonthlySpend.toFixed(2),
@@ -173,7 +178,6 @@ export const getCreatorDashboardStats = async (req, res) => {
           (l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0)
       ).length,
       totalClicks: lifetimeClicks,
-      totalPpcBalance: (user?.walletBalance || 0).toFixed(2),
       totalListings: listings.length,
       statusCount: {
         approved: listings.filter((l) => l.status === 'approved').length,
@@ -182,7 +186,7 @@ export const getCreatorDashboardStats = async (req, res) => {
       },
     };
 
-    // ৪. ক্যাশ আপডেট
+    // ৪. ক্যাশ আপডেট (ডাটাবেসে সেভ)
     await User.findByIdAndUpdate(creatorId, {
       $set: {
         'dashboardStats.lastUpdated': now,
@@ -194,105 +198,12 @@ export const getCreatorDashboardStats = async (req, res) => {
       success: true,
       stats,
       chartData,
+      walletBalance: user.walletBalance.toFixed(2), // লেটেস্ট ব্যালেন্স
       isCached: false,
+      lastUpdated: now,
     });
   } catch (error) {
     console.error('Stats Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
-// export const getCreatorDashboardStats = async (req, res) => {
-//   try {
-//     const creatorId = req.user._id;
-//     const now = new Date();
-
-//     // 1. Time Range Setup
-//     const sevenDaysAgo = new Date();
-//     sevenDaysAgo.setHours(0, 0, 0, 0);
-//     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-
-//     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-//     const [listings, transactions, allAnalytics, userWallet] = await Promise.all([
-//       Listing.find({ creatorId }),
-//       Transaction.find({
-//         creator: creatorId,
-//         status: 'completed',
-//         createdAt: { $gte: startOfMonth },
-//       }),
-//       Analytics.find({ creatorId }).lean(),
-//       User.findById(creatorId).select('walletBalance'),
-//     ]);
-
-//     // 2. Lifetime Totals from Analytics
-//     const lifetimeViews = allAnalytics.reduce((acc, curr) => acc + (curr.views || 0), 0);
-//     const lifetimeClicks = allAnalytics.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
-
-//     // 3. Graph Synchronization (Last 7 Days)
-//     const chartData = [];
-//     for (let i = 0; i < 7; i++) {
-//       const targetDate = new Date(sevenDaysAgo);
-//       targetDate.setDate(targetDate.getDate() + i);
-//       const dateStr = targetDate.toISOString().split('T')[0];
-
-//       const dayData = allAnalytics.filter(
-//         (a) => new Date(a.date).toISOString().split('T')[0] === dateStr
-//       );
-
-//       chartData.push({
-//         name: targetDate.toLocaleDateString('en-US', { weekday: 'short' }),
-//         views: dayData.reduce((sum, d) => sum + (d.views || 0), 0),
-//         clicks: dayData.reduce((sum, d) => sum + (d.clicks || 0), 0),
-//       });
-//     }
-
-//     // 4. Monthly Spend Calculation
-//     const totalMonthlySpend = transactions.reduce(
-//       (acc, curr) => acc + (Number(curr.amountPaid) || 0),
-//       0
-//     );
-
-//     // ✅ 5. Filter Active Promotions (Boost & PPC)
-//     const activeBoostsCount = listings.filter(
-//       (l) => l.promotion?.boost?.isActive && new Date(l.promotion.boost.expiresAt) > now
-//     ).length;
-
-//     const activePpcCount = listings.filter(
-//       (l) => l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0
-//     ).length;
-
-//     // Optional: Count listings that have EITHER Boost or PPC active
-//     const totalActivePromoted = listings.filter(
-//       (l) =>
-//         (l.promotion?.boost?.isActive && new Date(l.promotion.boost.expiresAt) > now) ||
-//         (l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0)
-//     ).length;
-
-//     const statusCount = {
-//       approved: listings.filter((l) => l.status === 'approved').length,
-//       pending: listings.filter((l) => l.status === 'pending').length,
-//       rejected: listings.filter((l) => l.status === 'rejected').length,
-//     };
-
-//     res.status(200).json({
-//       success: true,
-//       stats: {
-//         totalViews: lifetimeViews,
-//         totalMonthlySpend: totalMonthlySpend.toFixed(2),
-//         activeBoostsCount, // Only Viral Boosts
-//         activePpcCount, // Only PPC campaigns
-//         totalActivePromoted, // Any active promotion
-//         totalClicks: lifetimeClicks,
-//         totalPpcBalance: userWallet?.walletBalance?.toFixed(2) || '0.00',
-//         totalListings: listings.length,
-//         statusCount,
-//       },
-//       chartData,
-//     });
-//   } catch (error) {
-//     console.error('Stats Error:', error);
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-

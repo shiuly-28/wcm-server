@@ -1,266 +1,3 @@
-// import mongoose from 'mongoose';
-// import Stripe from 'stripe';
-// import axios from 'axios';
-// import Transaction from '../models/Transaction.js';
-// import Listing from '../models/Listing.js';
-// import { jsPDF } from 'jspdf';
-// import autoTable from 'jspdf-autotable';
-// import { createAuditLog } from '../utils/logger.js';
-
-// const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-// const getExchangeRate = async (fromCurrency, toCurrency) => {
-//   try {
-//     const from = fromCurrency.toLowerCase();
-//     const to = toCurrency.toLowerCase();
-//     if (from === to) return 1;
-
-//     const response = await axios.get(
-//       `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_RATE_API_KEY}/pair/${from}/${to}`
-//     );
-
-//     if (response.data && response.data.conversion_rate) {
-//       return response.data.conversion_rate;
-//     }
-//     return 1;
-//   } catch (error) {
-//     console.error('Exchange Rate Error:', error.message);
-//     return 1;
-//   }
-// };
-
-// export const createCheckoutSession = async (req, res) => {
-//   try {
-//     const { listingId, packageType, amount, currency, currentPath, days, totalClicks } = req.body;
-
-//     const listing = await Listing.findById(listingId);
-//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-//     const now = new Date();
-
-//     // --- প্রি-পেমেন্ট ভ্যালিডেশন (ডুপ্লিকেট প্রোমোশন চেক) ---
-//     if (packageType === 'boost') {
-//       // যদি অলরেডি একটিভ বুস্ট থাকে যার মেয়াদ শেষ হয়নি
-//       if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
-//         return res.status(400).json({
-//           message: 'You already have an active Viral Boost for this listing.',
-//         });
-//       }
-//     } else if (packageType === 'ppc') {
-//       // যদি পিপিছি ব্যালেন্স এখনো থাকে
-//       if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
-//         return res.status(400).json({
-//           message: 'You already have an active PPC balance. Please wait for it to finish.',
-//         });
-//       }
-//     }
-
-//     const paymentCurrency = currency || 'eur';
-
-//     // CPC ক্যালকুলেশন (এটি মেটাডাটায় যাবে)
-//     const calculatedCPC =
-//       packageType === 'ppc' ? (Number(amount) / Number(totalClicks)).toFixed(4) : '0';
-
-//     // স্ট্রাইপ সেশন তৈরি
-//     const session = await stripe.checkout.sessions.create({
-//       payment_method_types: ['card'],
-//       line_items: [
-//         {
-//           price_data: {
-//             currency: paymentCurrency,
-//             product_data: {
-//               name: `${packageType.toUpperCase()} Promotion: ${listing.title}`,
-//               description:
-//                 packageType === 'boost'
-//                   ? `${days} Days Viral Boost`
-//                   : `${totalClicks} Clicks Credit`,
-//             },
-//             unit_amount: Math.round(Number(amount) * 100),
-//           },
-//           quantity: 1,
-//         },
-//       ],
-//       mode: 'payment',
-//       success_url: `${process.env.CLIENT_URL}${currentPath || '/'}?success=true`,
-//       cancel_url: `${process.env.CLIENT_URL}${currentPath || '/'}?canceled=true`,
-//       metadata: {
-//         listingId,
-//         packageType,
-//         days: days ? days.toString() : '0',
-//         totalClicks: totalClicks ? totalClicks.toString() : '0',
-//         originalCpc: calculatedCPC,
-//         creatorId: req.user._id.toString(),
-//       },
-//     });
-
-//     res.status(200).json({ url: session.url });
-//   } catch (error) {
-//     console.error('Stripe Session Error:', error);
-//     res.status(500).json({ message: 'Could not initiate payment. Please try again.' });
-//   }
-// };
-
-// const applyPromotionLogic = (listing, daysInput = null) => {
-//   let boostScore = 0;
-//   let ppcScore = 0;
-//   const now = new Date();
-
-//   // ১. Boost Intensity (টাকা / দিন)
-//   if (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now) {
-//     const amount = listing.promotion.boost.amountPaid || 0;
-//     const expiry = new Date(listing.promotion.boost.expiresAt);
-
-//     let daysDiff = daysInput;
-//     if (!daysDiff) {
-//       const diffTime = Math.abs(expiry - now);
-//       daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
-//     }
-
-//     boostScore = (amount / daysDiff) * 10;
-//   }
-
-//   // ২. PPC Priority (High CPC = High Level)
-//   if (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) {
-//     const cpc = listing.promotion.ppc.costPerClick || 0.1;
-//     const balance = listing.promotion.ppc.ppcBalance || 0;
-
-//     // CPC কে ৩০০ গুণ গুরুত্ব দেওয়া হয়েছে
-//     ppcScore = cpc * 300 + balance * 0.05;
-//   }
-
-//   // ৩. আপডেট
-//   listing.promotion.level = Math.floor(boostScore + ppcScore);
-//   listing.isPromoted = !!(
-//     (listing.promotion.ppc.isActive && listing.promotion.ppc.ppcBalance > 0) ||
-//     (listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now)
-//   );
-
-//   if (!listing.isPromoted) listing.promotion.level = 0;
-
-//   return listing;
-// };
-
-// export const handleStripeWebhook = async (req, res) => {
-//   const sig = req.headers['stripe-signature'];
-//   let event;
-
-//   try {
-//     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-//   } catch (err) {
-//     return res.status(400).send(`Webhook Error: ${err.message}`);
-//   }
-
-//   if (event.type === 'checkout.session.completed') {
-//     const session = event.data.object;
-
-//     // স্ট্রাইপ থেকে লাইন আইটেম এবং ট্যাক্স ডিটেইলস নিয়ে আসা
-//     const expandedSession = await stripe.checkout.sessions.retrieve(session.id, {
-//       expand: ['total_details.breakdown.taxes'],
-//     });
-
-//     const { listingId, packageType, creatorId, days, totalClicks, originalCpc } = session.metadata;
-
-//     const dbSession = await mongoose.startSession();
-//     dbSession.startTransaction();
-
-//     try {
-//       const listing = await Listing.findById(listingId).session(dbSession);
-//       if (!listing) throw new Error('Listing not found');
-
-//       // পেমেন্ট ডাটা প্রসেসিং
-//       const amountPaid = session.amount_total / 100; // অরিজিনাল কারেন্সি (যেমন USD)
-//       const paymentCurrency = session.currency.toUpperCase();
-//       const targetCurrency = process.env.INTERNAL_CURRENCY || 'EUR';
-
-//       // রিয়েল-টাইম এক্সচেঞ্জ রেট কল
-//       const fxRate = await getExchangeRate(paymentCurrency, targetCurrency);
-//       const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
-
-//       // --- রিয়েল ভ্যাট ক্যালকুলেশন ---
-//       // স্ট্রাইপ যদি ট্যাক্স অটো-ক্যালকুলেট করে থাকে তবে সেটি নেবে,
-//       // নাহলে পেমেন্ট গেটওয়ের স্ট্যান্ডার্ড হিসেবে অ্যামাউন্ট থেকে ক্যালকুলেট করবে।
-//       let vatAmount = 0;
-//       if (
-//         expandedSession.total_details.breakdown &&
-//         expandedSession.total_details.breakdown.taxes.length > 0
-//       ) {
-//         vatAmount = expandedSession.total_details.breakdown.taxes[0].amount / 100;
-//       } else {
-//         // যদি স্ট্রাইপ ট্যাক্স না পাঠায়, তবে ইন্টারনাল কারেন্সি রেট অনুযায়ী ভ্যাট বের করা (১৯% স্ট্যান্ডার্ড হিসেবে ধরে)
-//         // কিন্তু এটি ডাটাবেসে সেভ হয়ে যাবে তাই ভবিষ্যতে রেট বদলালেও সমস্যা নেই।
-//         vatAmount = Number((amountPaid - amountPaid / 1.19).toFixed(2));
-//       }
-
-//       // ট্রানজেকশন রেকর্ড (এখুনি ডাটা ফ্রিজ করে দেওয়া হচ্ছে)
-//       const transaction = await Transaction.create(
-//         [
-//           {
-//             creator: creatorId,
-//             listing: listingId,
-//             stripeSessionId: session.id,
-//             amountPaid, // রিয়েল পেইড অ্যামাউন্ট (যেমন ১০০ USD)
-//             currency: session.currency,
-//             fxRate,
-//             amountInEUR,
-//             packageType,
-//             status: 'completed',
-//             invoiceNumber: `INV-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-//             vatAmount, // রিয়েল ভ্যাট যা পেমেন্টের সময় কাটা হয়েছে
-//           },
-//         ],
-//         { session: dbSession }
-//       );
-
-//       // --- ডাটা আপডেট লজিক ---
-//       if (packageType === 'boost') {
-//         listing.promotion.boost.isActive = true;
-//         listing.promotion.boost.amountPaid = amountInEUR;
-//         const expiry = new Date();
-//         expiry.setDate(expiry.getDate() + parseInt(days));
-//         listing.promotion.boost.expiresAt = expiry;
-//       } else if (packageType === 'ppc') {
-//         listing.promotion.ppc.isActive = true;
-//         listing.promotion.ppc.ppcBalance = amountInEUR;
-//         listing.promotion.ppc.amountPaid = amountInEUR;
-//         listing.promotion.ppc.totalClicks = parseInt(totalClicks);
-//         listing.promotion.ppc.executedClicks = 0;
-
-//         const cpcInEUR = Number((Number(originalCpc) * fxRate).toFixed(4));
-//         listing.promotion.ppc.costPerClick = cpcInEUR;
-//       }
-
-//       applyPromotionLogic(listing, parseInt(days) || null);
-//       await listing.save({ session: dbSession });
-
-//       await createAuditLog({
-//         req,
-//         user: creatorId, // সরাসরি পাস করা হলো
-//         action: 'PROMOTION_PURCHASED',
-//         targetType: 'Transaction',
-//         targetId: transaction[0]._id,
-//         details: {
-//           listingTitle: listing.title,
-//           packageType: packageType, // 'boost' or 'ppc'
-//           amountPaid: `${amountPaid} ${paymentCurrency}`,
-//           amountInEUR: `${amountInEUR} EUR`,
-//           status: 'Success',
-//           message: `Creator purchased ${packageType.toUpperCase()} for "${listing.title}"`,
-//         },
-//       });
-
-//       await dbSession.commitTransaction();
-
-//       console.log(`[Webhook] Success. Transaction saved with VAT: ${vatAmount}`);
-//     } catch (error) {
-//       await dbSession.abortTransaction();
-//       console.error('❌ Webhook Logic Error:', error.message);
-//     } finally {
-//       dbSession.endSession();
-//     }
-//   }
-//   res.json({ received: true });
-// };
-
 import mongoose from 'mongoose';
 import Stripe from 'stripe';
 import axios from 'axios';
@@ -273,7 +10,6 @@ import { createAuditLog } from '../utils/logger.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// --- Real-time Exchange Rate Helper ---
 const getExchangeRate = async (fromCurrency, toCurrency) => {
   try {
     const from = fromCurrency.toLowerCase();
@@ -288,7 +24,6 @@ const getExchangeRate = async (fromCurrency, toCurrency) => {
   }
 };
 
-// --- Helper: Apply Promotion Logic (Same as before) ---
 const applyPromotionLogic = (listing, daysInput = null) => {
   let boostScore = 0;
   let ppcScore = 0;
@@ -317,7 +52,6 @@ const applyPromotionLogic = (listing, daysInput = null) => {
   return listing;
 };
 
-// --- STEP 1: Create Stripe Session for Wallet Top-up ---
 export const createCheckoutSession = async (req, res) => {
   try {
     const { amount, currency } = req.body; // শুধুমাত্র কত টাকা অ্যাড করবে
@@ -343,8 +77,8 @@ export const createCheckoutSession = async (req, res) => {
         },
       ],
       mode: 'payment',
-      success_url: `${process.env.CLIENT_URL}/dashboard/wallet?success=true`,
-      cancel_url: `${process.env.CLIENT_URL}/dashboard/wallet?canceled=true`,
+      success_url: `${process.env.CLIENT_URL}/dashboard/promotions?success=true`,
+      cancel_url: `${process.env.CLIENT_URL}/dashboard/promotions?canceled=true`,
       metadata: {
         creatorId: req.user._id.toString(),
         type: 'wallet_topup',
@@ -357,7 +91,6 @@ export const createCheckoutSession = async (req, res) => {
   }
 };
 
-// --- STEP 2: Purchase Promotion from Wallet Balance ---
 export const purchasePromotion = async (req, res) => {
   const { listingId, packageType, amountInEUR, days, totalClicks } = req.body;
   const userId = req.user._id;
@@ -377,7 +110,6 @@ export const purchasePromotion = async (req, res) => {
       throw new Error('Insufficient wallet balance.');
     }
 
-    // --- ডুপ্লিকেট প্রোমোশন চেক ---
     const now = new Date();
     if (
       packageType === 'boost' &&
@@ -469,7 +201,6 @@ export const purchasePromotion = async (req, res) => {
   }
 };
 
-// --- STEP 3: Handle Webhook (Top-up logic only) ---
 export const handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -532,7 +263,6 @@ export const handleStripeWebhook = async (req, res) => {
   res.json({ received: true });
 };
 
-// --- Refund/Cancel Active Promotion ---
 export const cancelPromotion = async (req, res) => {
   const { listingId, packageType } = req.body;
   const userId = req.user._id;
@@ -555,10 +285,10 @@ export const cancelPromotion = async (req, res) => {
         const totalAmount = listing.promotion.boost.amountPaid;
         const remainingTime = expiry.getTime() - now.getTime();
         const remainingDays = Math.max(0, remainingTime / (1000 * 60 * 60 * 24));
-        
+
         // রিফান্ড ক্যালকুলেশন (বাকি দিন অনুযায়ী)
-        refundAmount = Number(((totalAmount / 30) * remainingDays).toFixed(2)); 
-        
+        refundAmount = Number(((totalAmount / 30) * remainingDays).toFixed(2));
+
         listing.promotion.boost.isActive = false;
         listing.promotion.boost.expiresAt = now;
       }
@@ -591,13 +321,13 @@ export const cancelPromotion = async (req, res) => {
     applyPromotionLogic(listing);
     await listing.save();
 
-    res.status(200).json({ 
-      success: true, 
-      refundAmount, 
-      newBalance: user.walletBalance 
+    res.status(200).json({
+      success: true,
+      refundAmount,
+      newBalance: user.walletBalance,
     });
   } catch (error) {
-    console.error("Cancel Promotion Error:", error);
+    console.error('Cancel Promotion Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
