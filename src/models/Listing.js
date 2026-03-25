@@ -22,12 +22,6 @@ const listingSchema = new mongoose.Schema(
     rejectionReason: { type: String, trim: true, default: '' },
     additionalReason: { type: String, trim: true, default: '' },
     image: { type: String, required: true },
-    tags: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Tag',
-      },
-    ],
     favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     promotion: {
       level: { type: Number, default: 0 },

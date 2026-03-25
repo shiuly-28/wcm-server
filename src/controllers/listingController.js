@@ -753,7 +753,7 @@ export const getMyFavorites = async (req, res) => {
         .skip(skip)
         .limit(Number(limit))
         .populate('category', 'title')
-        .populate('tags', 'title image')
+        .populate('culturalTags', 'title image')
         .populate('creatorId', 'firstName lastName profile.profileImage') // creatorId আপনার মডেল অনুযায়ী
         .lean(),
       Listing.countDocuments(filter),
