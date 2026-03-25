@@ -28,11 +28,13 @@ import upload from '../config/multer.js';
 
 const router = express.Router();
 
-router.use(authMiddleware);
-router.use(authorizeRoles('admin'));
 
 router.get('/tags/by-category/:categoryId', getTagsByCategory);
 router.get('/categories', getAllCategories);
+
+router.use(authMiddleware);
+router.use(authorizeRoles('admin'));
+
 router.get('/stats', getAdminStats);
 router.get('/transactions', getAllTransactions);
 router.get('/export-transactions', exportTransactionsExcel);
