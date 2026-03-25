@@ -4,7 +4,7 @@ import path from 'path';
 import Category from '../models/Category.js';
 import Tag from '../models/Tag.js';
 import User from '../models/User.js';
-import mongoose from 'mongoose';
+import mongoose from 'mongoose'
 import { calculateListingLevel } from '../utils/levelCalculator.js';
 import Analytics from '../models/Analytics.js';
 import InteractionLog from '../models/InteractionLog.js';
@@ -706,6 +706,80 @@ export const toggleFavorite = async (req, res) => {
   } catch (error) {
     console.error('Favorite Toggle Error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+export const getMyFavorites = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // --- Query Params ---
+    const {
+      sort = 'newest',
+      category, // category ID string হিসেবে আসবে
+      search,
+      page = 1,
+      limit = 12,
+    } = req.query;
+
+    // ১. ফিল্টার সেটআপ: ইউজার আইডি ফেভারিট লিস্টে আছে কিনা চেক
+    const filter = { favorites: userId, status: 'approved' }; // শুধুমাত্র এপ্রুভড লিস্টিং দেখানো ভালো
+
+    // যদি ফ্রন্টএন্ড থেকে ক্যাটাগরি আইডি পাঠায়
+    if (category && mongoose.Types.ObjectId.isValid(category)) {
+      filter.category = category;
+    }
+
+    // সার্চ লজিক
+    if (search) {
+      filter.title = { $regex: search, $options: 'i' };
+    }
+
+    // --- সর্টিং ম্যাপ ---
+    const sortMap = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      popular: { 'favorites.length': -1 }, // অ্যারে সাইজ অনুযায়ী সর্ট
+      az: { title: 1 },
+      za: { title: -1 },
+    };
+    const sortQuery = sortMap[sort] || sortMap.newest;
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [listings, total] = await Promise.all([
+      Listing.find(filter)
+        .sort(sortQuery)
+        .skip(skip)
+        .limit(Number(limit))
+        .populate('category', 'title')
+        .populate('tags', 'title image')
+        .populate('creatorId', 'firstName lastName profile.profileImage') // creatorId আপনার মডেল অনুযায়ী
+        .lean(),
+      Listing.countDocuments(filter),
+    ]);
+
+    // ৩. ডাটা ফরম্যাটিং
+    const data = listings.map((l) => ({
+      ...l,
+      isFavorited: true, // যেহেতু ফেভারিট লিস্ট থেকেই আসছে
+      // আপনার লেভেল ক্যালকুলেটর থাকলে এখানে র‍্যাপ করতে পারেন
+      level: calculateListingLevel ? calculateListingLevel(l) : null,
+    }));
+
+    res.status(200).json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / Number(limit)),
+      listings: data,
+    });
+  } catch (error) {
+    console.error('Get Favorites Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Favorites fetch failed. Please try again.',
+    });
   }
 };
 

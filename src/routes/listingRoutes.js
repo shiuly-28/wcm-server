@@ -12,6 +12,7 @@ import {
   getCreatorListingCount,
   handlePpcClick,
   cancelPromotion,
+  getMyFavorites,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles, optionalAuth } from '../middlewares/auth.js';
 
@@ -22,6 +23,7 @@ router.get('/meta-data', getCategoriesAndTags);
 
 router.get('/count/:creatorId', getCreatorListingCount);
 
+router.get('/favorites', authMiddleware, getMyFavorites);
 router.post('/favorite/:id', authMiddleware, toggleFavorite);
 
 router.post('/:id/click', optionalAuth, handlePpcClick);
