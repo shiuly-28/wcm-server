@@ -174,19 +174,36 @@ const getExchangeRate = async (fromCurrency, toCurrency) => {
 export const createCheckoutSession = async (req, res) => {
   try {
     const { amount, currency } = req.body;
+
+    // ১. ইউজার ডাটা চেক
     const user = await User.findById(req.user._id);
+    if (!user || !user.profile) {
+      return res
+        .status(400)
+        .json({ message: 'Profile information missing. Please complete your profile.' });
+    }
 
     if (!amount || amount < 5)
       return res.status(400).json({ message: 'Minimum top-up is 5 units.' });
 
     const paymentCurrency = (currency || 'eur').toLowerCase();
 
-    // --- ডাইনামিক ভ্যাট ক্যালকুলেশন ---
+    // ২. ডাইনামিক ভ্যাট ক্যালকুলেশন
     const netAmount = Number(amount);
-    const vatPercent = calculateVAT(user.profile); // আপনার ৫টি রুল এখানে কাজ করবে
+
+    // প্রোফাইল থেকে ডাটা বের করে ফাংশনে পাঠানো হচ্ছে
+    // আপনার ফাংশন অনুযায়ী: calculateVAT(countryCode, isBusiness, isValidVAT)
+    const vatResult = calculateVAT(
+      user.profile.countryCode,
+      user.profile.customerType === 'business',
+      user.profile.isVatValid
+    );
+
+    const vatPercent = vatResult.rate; // রেটটি বের করে আনা হলো
     const vatAmount = (netAmount * vatPercent) / 100;
     const totalAmount = netAmount + vatAmount;
 
+    // ৩. স্ট্রাইপ সেশন তৈরি
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
@@ -195,9 +212,9 @@ export const createCheckoutSession = async (req, res) => {
             currency: paymentCurrency,
             product_data: {
               name: `Wallet Top-up: ${user.firstName}`,
-              description: `Net: ${netAmount} | VAT (${vatPercent}%): ${vatAmount.toFixed(2)}`,
+              description: `Net: ${netAmount} | VAT (${vatPercent}% - ${vatResult.type}): ${vatAmount.toFixed(2)}`,
             },
-            unit_amount: Math.round(totalAmount * 100), // ভ্যাটসহ টোটাল অ্যামাউন্ট
+            unit_amount: Math.round(totalAmount * 100),
           },
           quantity: 1,
         },
@@ -218,7 +235,8 @@ export const createCheckoutSession = async (req, res) => {
     res.status(200).json({ url: session.url });
   } catch (error) {
     console.error('Stripe Error:', error);
-    res.status(500).json({ message: 'Stripe failed. Try again.' });
+    // এরর মেসেজ পাঠানো যাতে ফ্রন্টএন্ডে দেখা যায়
+    res.status(500).json({ message: error.message || 'Server side error in payment.' });
   }
 };
 

@@ -34,7 +34,7 @@ const EU_VAT_DATA = {
 const EU_COUNTRIES = Object.keys(EU_VAT_DATA);
 
 export const calculateVAT = (countryCode, isBusiness, isValidVAT) => {
-  const country = countryCode?.toUpperCase();
+  const country = countryCode?.toUpperCase() || 'FR'; // সেফটি ডিফল্ট
 
   // Rule 1: France Creator (Always 20%)
   if (country === 'FR') {
@@ -48,7 +48,7 @@ export const calculateVAT = (countryCode, isBusiness, isValidVAT) => {
 
   // Rule 3: EU Individual (VAT of their country via OSS)
   if (EU_COUNTRIES.includes(country)) {
-    const rate = EU_VAT_DATA[country] || 20; // নিজ দেশের রেট, না থাকলে ডিফল্ট ২০
+    const rate = EU_VAT_DATA[country] || 20; 
     return { rate, type: 'EU_OSS' };
   }
 
@@ -66,3 +66,4 @@ export const validateVatWithVIES = async (vatNumber) => {
     return false;
   }
 };
+
