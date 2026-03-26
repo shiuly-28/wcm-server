@@ -52,7 +52,7 @@ export const createTag = async (req, res) => {
     const newTag = await Tag.create({
       title,
       image: imageUrl,
-      category: categoryId, 
+      category: categoryId,
     });
 
     res.status(201).json(newTag);
@@ -74,7 +74,7 @@ export const getAllCategories = async (req, res) => {
   }
 };
 
-// new 
+// new
 export const getTagsByCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
@@ -507,22 +507,25 @@ export const updateCategoryOrder = async (req, res) => {
 
 export const exportUsersExcel = async (req, res) => {
   try {
-    const userCursor = User.find({}).select('-password').cursor();
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('System All Users');
+    // 🔍 শুধুমাত্র যাদের রোল 'creator' তাদের ফিল্টার করুন
+    const userCursor = User.find({ role: 'creator' }).select('-password').cursor();
 
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('System Creators List');
+
+    // কালার কোড এবং হেডার (SaaS Style)
     worksheet.columns = [
       { header: 'ID', key: '_id', width: 25 },
       { header: 'FULL NAME', key: 'fullName', width: 25 },
+      { header: 'BUSINESS NAME', key: 'businessName', width: 25 }, // নতুন অ্যাড করা হয়েছে
       { header: 'EMAIL', key: 'email', width: 30 },
       { header: 'USERNAME', key: 'username', width: 20 },
-      { header: 'ROLE', key: 'role', width: 12 },
       { header: 'STATUS', key: 'status', width: 12 },
       { header: 'COUNTRY', key: 'country', width: 15 },
-      { header: 'CREATOR STATUS', key: 'creatorStatus', width: 15 },
       { header: 'JOIN DATE', key: 'createdAt', width: 20 },
     ];
 
+    // হেডার স্টাইল (Orange Theme)
     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     worksheet.getRow(1).fill = {
       type: 'pattern',
@@ -530,28 +533,22 @@ export const exportUsersExcel = async (req, res) => {
       fgColor: { argb: 'FFEA580C' },
     };
 
-    let count = 0;
     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
       const profile = user.profile || {};
-      const creatorRequest = user.creatorRequest || {};
 
       worksheet.addRow({
         _id: user._id.toString(),
         fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'N/A',
+        businessName: profile.businessName || 'N/A', // আপনার স্কিমা অনুযায়ী
         email: user.email || 'N/A',
         username: user.username || 'N/A',
-        role: (user.role || 'user').toUpperCase(),
         status: (user.status || 'active').toUpperCase(),
         country: profile.country || 'N/A',
-        creatorStatus: creatorRequest.isApplied
-          ? (creatorRequest.status || 'pending').toUpperCase()
-          : 'NO REQUEST',
         createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : 'N/A',
       });
-      count++;
     }
 
-    const fileName = `WCM_All_Users_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const fileName = `WCM_Creators_List_${new Date().toISOString().split('T')[0]}.xlsx`;
 
     res.setHeader(
       'Content-Type',
@@ -567,9 +564,140 @@ export const exportUsersExcel = async (req, res) => {
   }
 };
 
+// export const exportUsersExcel = async (req, res) => {
+//   try {
+//     const userCursor = User.find({}).select('-password').cursor();
+//     const workbook = new ExcelJS.Workbook();
+//     const worksheet = workbook.addWorksheet('System All Users');
+
+//     worksheet.columns = [
+//       { header: 'ID', key: '_id', width: 25 },
+//       { header: 'FULL NAME', key: 'fullName', width: 25 },
+//       { header: 'EMAIL', key: 'email', width: 30 },
+//       { header: 'USERNAME', key: 'username', width: 20 },
+//       { header: 'ROLE', key: 'role', width: 12 },
+//       { header: 'STATUS', key: 'status', width: 12 },
+//       { header: 'COUNTRY', key: 'country', width: 15 },
+//       { header: 'CREATOR STATUS', key: 'creatorStatus', width: 15 },
+//       { header: 'JOIN DATE', key: 'createdAt', width: 20 },
+//     ];
+
+//     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+//     worksheet.getRow(1).fill = {
+//       type: 'pattern',
+//       pattern: 'solid',
+//       fgColor: { argb: 'FFEA580C' },
+//     };
+
+//     let count = 0;
+//     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
+//       const profile = user.profile || {};
+//       const creatorRequest = user.creatorRequest || {};
+
+//       worksheet.addRow({
+//         _id: user._id.toString(),
+//         fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'N/A',
+//         email: user.email || 'N/A',
+//         username: user.username || 'N/A',
+//         role: (user.role || 'user').toUpperCase(),
+//         status: (user.status || 'active').toUpperCase(),
+//         country: profile.country || 'N/A',
+//         creatorStatus: creatorRequest.isApplied
+//           ? (creatorRequest.status || 'pending').toUpperCase()
+//           : 'NO REQUEST',
+//         createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : 'N/A',
+//       });
+//       count++;
+//     }
+
+//     const fileName = `WCM_All_Users_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+//     res.setHeader(
+//       'Content-Type',
+//       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+//     );
+//     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+
+//     await workbook.xlsx.write(res);
+//     return res.end();
+//   } catch (error) {
+//     console.error('EXPORT ERROR:', error);
+//     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
+//   }
+// };
+
+// export const exportTransactionsExcel = async (req, res) => {
+//   try {
+//     const transactionCursor = Transaction.find({})
+//       .populate('creator', 'firstName lastName email username')
+//       .populate('listing', 'title')
+//       .sort({ createdAt: -1 })
+//       .cursor();
+
+//     const workbook = new ExcelJS.Workbook();
+//     const worksheet = workbook.addWorksheet('Payment Report');
+
+//     worksheet.columns = [
+//       { header: 'DATE', key: 'createdAt', width: 15 },
+//       { header: 'INVOICE NO', key: 'invoiceNumber', width: 20 },
+//       { header: 'CREATOR', key: 'creatorName', width: 25 },
+//       { header: 'LISTING', key: 'listingTitle', width: 30 },
+//       { header: 'PACKAGE', key: 'packageType', width: 12 },
+//       { header: 'CURRENCY', key: 'currency', width: 10 },
+//       { header: 'AMOUNT PAID', key: 'amountPaid', width: 15 },
+//       { header: 'FX RATE', key: 'fxRate', width: 10 },
+//       { header: 'EUR (INTERNAL)', key: 'amountInEUR', width: 15 },
+//       { header: 'VAT (19% EUR)', key: 'vatAmount', width: 15 },
+//       { header: 'STRIPE ID', key: 'stripeSessionId', width: 30 },
+//     ];
+
+//     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+//     worksheet.getRow(1).fill = {
+//       type: 'pattern',
+//       pattern: 'solid',
+//       fgColor: { argb: 'FFEA580C' },
+//     };
+
+//     let count = 0;
+//     for (let tx = await transactionCursor.next(); tx != null; tx = await transactionCursor.next()) {
+//       worksheet.addRow({
+//         createdAt: tx.createdAt ? tx.createdAt.toISOString().split('T')[0] : 'N/A',
+//         invoiceNumber: tx.invoiceNumber || 'N/A',
+//         creatorName: tx.creator
+//           ? `${tx.creator.firstName || ''} ${tx.creator.lastName || ''}`.trim()
+//           : 'N/A',
+//         listingTitle: tx.listing ? tx.listing.title : 'Deleted Listing',
+//         packageType: (tx.packageType || '').toUpperCase(),
+//         currency: (tx.currency || '').toUpperCase(),
+//         amountPaid: tx.amountPaid,
+//         fxRate: tx.fxRate,
+//         amountInEUR: (tx.amountInEUR || 0).toFixed(2),
+//         vatAmount: (tx.vatAmount || 0).toFixed(2),
+//         stripeSessionId: tx.stripeSessionId,
+//       });
+//       count++;
+//     }
+
+//     const fileName = `Payment_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+//     res.setHeader(
+//       'Content-Type',
+//       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+//     );
+//     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+
+//     await workbook.xlsx.write(res);
+//     return res.end();
+//   } catch (error) {
+//     console.error('TRANSACTION EXPORT ERROR:', error);
+//     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
+//   }
+// };
+
 export const exportTransactionsExcel = async (req, res) => {
   try {
-    const transactionCursor = Transaction.find({})
+    // শুধুমাত্র সফল ট্রানজ্যাকশনগুলো নিলে রিপোর্ট ক্লিন থাকে, চাইলে {} রাখতে পারেন
+    const transactionCursor = Transaction.find({ status: 'succeeded' })
       .populate('creator', 'firstName lastName email username')
       .populate('listing', 'title')
       .sort({ createdAt: -1 })
@@ -586,12 +714,12 @@ export const exportTransactionsExcel = async (req, res) => {
       { header: 'PACKAGE', key: 'packageType', width: 12 },
       { header: 'CURRENCY', key: 'currency', width: 10 },
       { header: 'AMOUNT PAID', key: 'amountPaid', width: 15 },
-      { header: 'FX RATE', key: 'fxRate', width: 10 },
-      { header: 'EUR (INTERNAL)', key: 'amountInEUR', width: 15 },
-      { header: 'VAT (19% EUR)', key: 'vatAmount', width: 15 },
+      { header: 'EUR (NET)', key: 'amountInEUR', width: 15 },
+      { header: 'VAT (19%)', key: 'vatAmount', width: 15 },
       { header: 'STRIPE ID', key: 'stripeSessionId', width: 30 },
     ];
 
+    // Header Styling (Your Orange Theme)
     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     worksheet.getRow(1).fill = {
       type: 'pattern',
@@ -599,25 +727,41 @@ export const exportTransactionsExcel = async (req, res) => {
       fgColor: { argb: 'FFEA580C' },
     };
 
-    let count = 0;
+    let totalRevenueEUR = 0;
+
     for (let tx = await transactionCursor.next(); tx != null; tx = await transactionCursor.next()) {
+      const eurVal = Number(tx.amountInEUR || 0);
+      const vatVal = Number(tx.vatAmount || 0);
+
       worksheet.addRow({
         createdAt: tx.createdAt ? tx.createdAt.toISOString().split('T')[0] : 'N/A',
         invoiceNumber: tx.invoiceNumber || 'N/A',
         creatorName: tx.creator
           ? `${tx.creator.firstName || ''} ${tx.creator.lastName || ''}`.trim()
           : 'N/A',
-        listingTitle: tx.listing ? tx.listing.title : 'Deleted Listing',
+        listingTitle: tx.listing ? tx.listing.title : 'N/A',
         packageType: (tx.packageType || '').toUpperCase(),
         currency: (tx.currency || '').toUpperCase(),
-        amountPaid: tx.amountPaid,
-        fxRate: tx.fxRate,
-        amountInEUR: (tx.amountInEUR || 0).toFixed(2),
-        vatAmount: (tx.vatAmount || 0).toFixed(2),
+        amountPaid: tx.amountPaid, // Number format for Excel formulas
+        amountInEUR: eurVal,
+        vatAmount: vatVal,
         stripeSessionId: tx.stripeSessionId,
       });
-      count++;
+
+      totalRevenueEUR += eurVal;
     }
+
+    // --- Footer: Total Revenue Row ---
+    const totalRow = worksheet.addRow({
+      listingTitle: 'TOTAL REVENUE (EUR)',
+      amountInEUR: totalRevenueEUR,
+    });
+    totalRow.font = { bold: true };
+    totalRow.getCell('amountInEUR').fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFF0FDF4' }, // Light green background
+    };
 
     const fileName = `Payment_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
 
