@@ -28,15 +28,51 @@ const userSchema = new mongoose.Schema(
       rejectionReason: { type: String, default: '' },
       adminComment: { type: String, default: '' },
     },
+    // profile: {
+    //   displayName: { type: String },
+    //   businessName: { type: String },
+    //   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
+    //   bio: { type: String },
+    //   profileImage: { type: String },
+    //   coverImage: { type: String },
+    //   country: { type: String },
+    //   city: { type: String },
+    //   language: { type: String },
+    //   websiteLink: { type: String },
+    //   socialLink: { type: String },
+    // },
     profile: {
       displayName: { type: String },
       businessName: { type: String },
-      category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category'},
+      category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
       bio: { type: String },
       profileImage: { type: String },
       coverImage: { type: String },
+
+      // --- VAT & Compliance Fields ---
       country: { type: String },
+      countryCode: { type: String, uppercase: true, trim: true },
       city: { type: String },
+
+      customerType: {
+        type: String,
+        enum: ['individual', 'business'],
+        default: 'individual',
+      },
+      vatNumber: {
+        type: String,
+        trim: true,
+        default: '',
+      }, // Optional as requested
+      isVatValid: {
+        type: Boolean,
+        default: false,
+      }, // VIES validation result
+      vatLastChecked: {
+        type: Date,
+      },
+      // -------------------------------
+
       language: { type: String },
       websiteLink: { type: String },
       socialLink: { type: String },

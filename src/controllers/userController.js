@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Listing from '../models/Listing.js';
+import { validateVatWithVIES } from '../utils/vatHelper.js'; 
 
 // ১. Register
 export const registerUser = async (req, res) => {
@@ -125,50 +126,128 @@ export const loginUser = async (req, res) => {
 // };
 
 // 3. Become Creator (Request)
+// export const becomeCreator = async (req, res) => {
+//   try {
+//     const {
+//       displayName,
+//       businessName,
+//       category,
+//       bio,
+//       country,
+//       city,
+//       language,
+//       websiteLink,
+//       socialLink
+//     } = req.body;
+
+//     const currentUser = await User.findById(req.user._id);
+
+//     let profilePath = currentUser.profile?.profileImage || '';
+//     let coverPath = currentUser.profile?.coverImage || '';
+
+//     if (req.files) {
+//       if (req.files.profileImage?.[0]) {
+//         profilePath = req.files.profileImage[0].path;
+//       }
+//       if (req.files.coverImage?.[0]) {
+//         coverPath = req.files.coverImage[0].path;
+//       }
+//     }
+
+//     const updatedUser = await User.findByIdAndUpdate(
+//       req.user._id,
+//       {
+//         $set: {
+//           'profile.displayName': displayName,
+//           'profile.businessName': businessName,
+//           'profile.category': category,
+//           'profile.bio': bio,
+//           'profile.country': country,
+//           'profile.city': city,
+//           'profile.language': language,
+//           'profile.websiteLink': websiteLink,
+//           'profile.socialLink': socialLink,
+//           'profile.profileImage': profilePath,
+//           'profile.coverImage': coverPath,
+
+//           'creatorRequest.isApplied': true,
+//           'creatorRequest.appliedAt': new Date(),
+//           'creatorRequest.status': 'pending',
+//           'creatorRequest.rejectionReason': '',
+//         },
+//       },
+//       { new: true, runValidators: true }
+//     ).select('-password');
+
+//     res.status(200).json({
+//       message: 'Creator request submitted successfully',
+//       user: updatedUser,
+//     });
+//   } catch (error) {
+//     console.error('Become Creator Error:', error);
+//     res.status(500).json({ message: error.message });
+//   }
+// };
+
 export const becomeCreator = async (req, res) => {
   try {
-    const { 
-      displayName, 
-      businessName, 
-      category, 
-      bio, 
-      country, 
-      city, 
-      language, 
-      websiteLink, 
-      socialLink 
+    const {
+      displayName,
+      businessName,
+      category,
+      bio,
+      country,
+      countryCode, // ISO কোড (FR, DE, etc.) - VAT এর জন্য জরুরি
+      city,
+      customerType, // 'individual' or 'business'
+      vatNumber, // Optional
+      language,
+      websiteLink,
+      socialLink,
     } = req.body;
 
     const currentUser = await User.findById(req.user._id);
+    if (!currentUser) return res.status(404).json({ message: 'User not found' });
 
+    // ১. ইমেজ হ্যান্ডলিং
     let profilePath = currentUser.profile?.profileImage || '';
     let coverPath = currentUser.profile?.coverImage || '';
 
     if (req.files) {
-      if (req.files.profileImage?.[0]) {
-        profilePath = req.files.profileImage[0].path; 
-      }
-      if (req.files.coverImage?.[0]) {
-        coverPath = req.files.coverImage[0].path;
-      }
+      if (req.files.profileImage?.[0]) profilePath = req.files.profileImage[0].path;
+      if (req.files.coverImage?.[0]) coverPath = req.files.coverImage[0].path;
     }
 
+    // ২. VAT Validation Logic (যদি বিজনেস হয় এবং ভ্যাট নাম্বার থাকে)
+    let isVatValid = false;
+    if (customerType === 'business' && vatNumber) {
+      // VIES API বা অন্য কোনো ভ্যালিডেটর কল করুন
+      isVatValid = await validateVatWithVIES(vatNumber);
+    }
+
+    // ৩. ডাটাবেস আপডেট
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
         $set: {
           'profile.displayName': displayName,
           'profile.businessName': businessName,
-          'profile.category': category,   
+          'profile.category': category,
           'profile.bio': bio,
           'profile.country': country,
+          'profile.countryCode': countryCode,
           'profile.city': city,
+          'profile.customerType': customerType || 'individual',
+          'profile.vatNumber': vatNumber || '',
+          'profile.isVatValid': isVatValid,
+          'profile.vatLastChecked': isVatValid ? new Date() : null,
           'profile.language': language,
           'profile.websiteLink': websiteLink,
           'profile.socialLink': socialLink,
           'profile.profileImage': profilePath,
           'profile.coverImage': coverPath,
 
+          // রিকোয়েস্ট স্ট্যাটাস
           'creatorRequest.isApplied': true,
           'creatorRequest.appliedAt': new Date(),
           'creatorRequest.status': 'pending',
@@ -179,7 +258,7 @@ export const becomeCreator = async (req, res) => {
     ).select('-password');
 
     res.status(200).json({
-      message: 'Creator request submitted successfully',
+      message: 'Creator application submitted successfully for review.',
       user: updatedUser,
     });
   } catch (error) {
