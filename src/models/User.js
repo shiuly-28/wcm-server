@@ -30,6 +30,8 @@ const userSchema = new mongoose.Schema(
     },
     profile: {
       displayName: { type: String },
+      businessName: { type: String },
+      category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category'},
       bio: { type: String },
       profileImage: { type: String },
       coverImage: { type: String },

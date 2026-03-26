@@ -69,41 +69,105 @@ export const loginUser = async (req, res) => {
 };
 
 // 3. Become Creator (Request)
+// export const becomeCreator = async (req, res) => {
+//   try {
+//     const { displayName, bio, country, city, language, websiteLink, socialLink, } = req.body;
+
+//     // ✅ ১. ডাটাবেজ থেকে বর্তমান ইউজারকে খুঁজে বের করুন (req.user এর ওপর নির্ভর করবেন না)
+//     const currentUser = await User.findById(req.user._id);
+
+//     // বর্তমান ইমেজগুলো ব্যাকআপ হিসেবে রাখা হচ্ছে
+//     let profilePath = currentUser.profile?.profileImage || '';
+//     let coverPath = currentUser.profile?.coverImage || '';
+
+//     // ✅ ২. নতুন ফাইল আপলোড হলে তবেই পাথ আপডেট হবে
+//     if (req.files) {
+//       if (req.files.profileImage?.[0]) {
+//         profilePath = req.files.profileImage[0].path; // Cloudinary URL
+//       }
+//       if (req.files.coverImage?.[0]) {
+//         coverPath = req.files.coverImage[0].path; // Cloudinary URL
+//       }
+//     }
+
+//     // ৩. ডাটাবেজ আপডেট
+//     const updatedUser = await User.findByIdAndUpdate(
+//       req.user._id,
+//       {
+//         $set: {
+//           'profile.displayName': displayName,
+//           'profile.bio': bio,
+//           'profile.country': country,
+//           'profile.city': city,
+//           'profile.language': language,
+//           'profile.websiteLink': websiteLink,
+//           'profile.socialLink': socialLink,
+//           'profile.profileImage': profilePath, // আপডেট হওয়া পাথ
+//           'profile.coverImage': coverPath, // আপডেট হওয়া পাথ
+
+//           'creatorRequest.isApplied': true,
+//           'creatorRequest.appliedAt': new Date(),
+//           'creatorRequest.status': 'pending',
+//           'creatorRequest.rejectionReason': '',
+//         },
+//       },
+//       { new: true, runValidators: true } // new: true নিশ্চিত করে যে আপডেট হওয়া ডাটা রিটার্ন করবে
+//     ).select('-password');
+
+//     res.status(200).json({
+//       message: 'Creator request submitted successfully',
+//       user: updatedUser,
+//     });
+//   } catch (error) {
+//     console.error('Become Creator Error:', error);
+//     res.status(500).json({ message: error.message });
+//   }
+// };
+
+// 3. Become Creator (Request)
 export const becomeCreator = async (req, res) => {
   try {
-    const { displayName, bio, country, city, language, websiteLink, socialLink } = req.body;
+    const { 
+      displayName, 
+      businessName, 
+      category, 
+      bio, 
+      country, 
+      city, 
+      language, 
+      websiteLink, 
+      socialLink 
+    } = req.body;
 
-    // ✅ ১. ডাটাবেজ থেকে বর্তমান ইউজারকে খুঁজে বের করুন (req.user এর ওপর নির্ভর করবেন না)
     const currentUser = await User.findById(req.user._id);
 
-    // বর্তমান ইমেজগুলো ব্যাকআপ হিসেবে রাখা হচ্ছে
     let profilePath = currentUser.profile?.profileImage || '';
     let coverPath = currentUser.profile?.coverImage || '';
 
-    // ✅ ২. নতুন ফাইল আপলোড হলে তবেই পাথ আপডেট হবে
     if (req.files) {
       if (req.files.profileImage?.[0]) {
-        profilePath = req.files.profileImage[0].path; // Cloudinary URL
+        profilePath = req.files.profileImage[0].path; 
       }
       if (req.files.coverImage?.[0]) {
-        coverPath = req.files.coverImage[0].path; // Cloudinary URL
+        coverPath = req.files.coverImage[0].path;
       }
     }
 
-    // ৩. ডাটাবেজ আপডেট
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
         $set: {
           'profile.displayName': displayName,
+          'profile.businessName': businessName,
+          'profile.category': category,   
           'profile.bio': bio,
           'profile.country': country,
           'profile.city': city,
           'profile.language': language,
           'profile.websiteLink': websiteLink,
           'profile.socialLink': socialLink,
-          'profile.profileImage': profilePath, // আপডেট হওয়া পাথ
-          'profile.coverImage': coverPath, // আপডেট হওয়া পাথ
+          'profile.profileImage': profilePath,
+          'profile.coverImage': coverPath,
 
           'creatorRequest.isApplied': true,
           'creatorRequest.appliedAt': new Date(),
@@ -111,7 +175,7 @@ export const becomeCreator = async (req, res) => {
           'creatorRequest.rejectionReason': '',
         },
       },
-      { new: true, runValidators: true } // new: true নিশ্চিত করে যে আপডেট হওয়া ডাটা রিটার্ন করবে
+      { new: true, runValidators: true }
     ).select('-password');
 
     res.status(200).json({
