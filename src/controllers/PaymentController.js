@@ -442,27 +442,55 @@ export const cancelPromotion = async (req, res) => {
     const now = new Date();
 
     if (packageType === 'boost' && listing.promotion?.boost?.isActive) {
-      const expiry = new Date(listing.promotion.boost.expiresAt);
+      const boost = listing.promotion.boost;
+      const expiry = new Date(boost.expiresAt);
+
       if (expiry > now) {
-        // ব্যবহৃত দিনের টাকা কেটে বাকিটা রিফান্ড
-        const totalPaid = listing.promotion.boost.amountPaid || 0;
-        const remainingTime = expiry.getTime() - now.getTime();
-        const remainingDays = Math.max(0, remainingTime / (1000 * 60 * 60 * 24));
-        // ৩০ দিনের প্যাকেজ হিসাব করলে (আপনার লজিক অনুযায়ী)
-        refundAmount = Number(((totalPaid / 30) * remainingDays).toFixed(2));
+        const totalPaid = Number(boost.amountPaid) || 0;
+        const totalDays = Number(boost.durationDays) || 1;
+
+        // ১. প্রতিদিনের রেট বের করা
+        const dailyRate = totalPaid / totalDays;
+
+        // ২. কতদিন বাকি আছে (পূর্ণ দিন)
+        const remainingTimeMs = expiry.getTime() - now.getTime();
+        const remainingDays = Math.floor(remainingTimeMs / (24 * 60 * 60 * 1000));
+
+        if (remainingDays > 0) {
+          refundAmount = Number((remainingDays * dailyRate).toFixed(2));
+        }
+
+        // ৩. সেফটি চেক
+        if (refundAmount > totalPaid) refundAmount = totalPaid;
+
+        console.log(
+          `DEBUG: Paid: ${totalPaid}, Days: ${totalDays}, Remaining: ${remainingDays}, Refund: ${refundAmount}`
+        );
       }
-      resetBoost(listing); // আপনার এক্সিস্টিং হেল্পার
+
+      // ৪. রিফান্ড হোক বা না হোক, বুস্টের দিন এবং টাকা ০ করে ফ্রেশ করা (আপনার রিকোয়ারমেন্ট অনুযায়ী)
+      boost.isActive = false;
+      boost.isPaused = false;
+      boost.amountPaid = 0;
+      boost.durationDays = 0; // এখানে ০ করে দেওয়া হলো
+      boost.expiresAt = null;
     } else if (packageType === 'ppc' && listing.promotion?.ppc?.isActive) {
       refundAmount = listing.promotion.ppc.ppcBalance || 0;
-      resetPPC(listing); // আপনার এক্সিস্টিং হেল্পার
+
+      // PPC রিসেট
+      listing.promotion.ppc.isActive = false;
+      listing.promotion.ppc.isPaused = false;
+      listing.promotion.ppc.ppcBalance = 0;
+      listing.promotion.ppc.amountPaid = 0;
+      listing.promotion.ppc.totalClicks = 0;
+      listing.promotion.ppc.executedClicks = 0;
     }
 
-    // ওয়ালেটে রিফান্ড অ্যাড এবং ট্রানজেকশন রেকর্ড
+    // ৫. ওয়ালেট আপডেট এবং ট্রানজেকশন রেকর্ড
     if (refundAmount > 0) {
       user.walletBalance = Number((user.walletBalance + refundAmount).toFixed(2));
       await user.save({ session: dbSession });
 
-      // --- রিফান্ড ট্রানজেকশন ক্রিয়েট ---
       await Transaction.create(
         [
           {
@@ -480,12 +508,17 @@ export const cancelPromotion = async (req, res) => {
       );
     }
 
-    // লেভেল এবং প্রমোশন লজিক আপডেট
+    // ৬. প্রমোশন লেভেল আপডেট (এখন ০ আসবে যেহেতু বুস্ট নেই)
     applyPromotionLogic(listing);
     await listing.save({ session: dbSession });
 
     await dbSession.commitTransaction();
-    res.status(200).json({ success: true, refundAmount });
+    res.status(200).json({
+      success: true,
+      refundAmount,
+      newBalance: user.walletBalance,
+      message: `Refunded €${refundAmount} and boost refreshed.`,
+    });
   } catch (error) {
     await dbSession.abortTransaction();
     res.status(500).json({ success: false, message: error.message });
