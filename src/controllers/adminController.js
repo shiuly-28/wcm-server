@@ -148,12 +148,20 @@ export const deleteTag = async (req, res) => {
 
 export const getAllUsers = async (req, res) => {
   try {
-    const { search = '', role = 'all', timeRange = 'all', page = 1, limit = 20 } = req.query;
+    // status ফিল্টারটি ডিকনস্ট্রাক্ট করা হয়েছে
+    const {
+      search = '',
+      role = 'all',
+      status = 'all',
+      timeRange = 'all',
+      page = 1,
+      limit = 20,
+    } = req.query;
 
     let query = {};
     const now = new Date();
 
-    // ১. সার্চ লজিক (Name, Email বা Username দিয়ে)
+    // ১. সার্চ লজিক (Name, Email বা Username দিয়ে)
     if (search) {
       query.$or = [
         { firstName: { $regex: search, $options: 'i' } },
@@ -163,12 +171,17 @@ export const getAllUsers = async (req, res) => {
       ];
     }
 
-    // ২. রোল ফিল্টারিং (Admin, Creator, User ইত্যাদি)
+    // ২. রোল ফিল্টারিং (Admin, Creator, User)
     if (role !== 'all') {
       query.role = role;
     }
 
-    // ৩. টাইম রেঞ্জ ফিল্টারিং (নতুন ইউজার কবে জয়েন করেছে)
+    // ৩. স্ট্যাটাস ফিল্টারিং (Active, Blocked, Suspended) - এটি নতুন যোগ করা হয়েছে
+    if (status !== 'all') {
+      query.status = status;
+    }
+
+    // ৪. টাইম রেঞ্জ ফিল্টারিং (নতুন ইউজার কবে জয়েন করেছে)
     if (timeRange !== 'all') {
       let startDate = new Date();
       if (timeRange === 'today') {
@@ -181,15 +194,15 @@ export const getAllUsers = async (req, res) => {
       query.createdAt = { $gte: startDate };
     }
 
-    // ৪. ডাটাবেস থেকে ডাটা আনা (প্যাজিনেশনসহ)
+    // ৫. ডাটাবেস থেকে ডাটা আনা (প্যাজিনেশনসহ)
     const users = await User.find(query)
-      .select('-password') // পাসওয়ার্ড বাদ দিয়ে
+      .select('-password')
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
+      .limit(Number(limit))
+      .skip((Number(page) - 1) * Number(limit))
       .lean();
 
-    // ৫. টোটাল কাউন্ট (ফ্রন্টএন্ড প্যাজিনেশনের জন্য)
+    // ৬. টোটাল কাউন্ট (ফ্রন্টএন্ড প্যাজিনেশনের জন্য)
     const totalUsers = await User.countDocuments(query);
 
     res.status(200).json({
@@ -375,17 +388,29 @@ export const rejectCreator = async (req, res) => {
 export const toggleUserStatus = async (req, res) => {
   try {
     const { userId } = req.params;
+    const { action } = req.query; // 'block' অথবা 'suspend'
+
     const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    if (user.role === 'admin') return res.status(400).json({ message: 'Cannot block an admin' });
+    let newStatus = 'active';
 
-    user.status = user.status === 'active' ? 'blocked' : 'active';
+    if (action === 'block') {
+      newStatus = user.status === 'blocked' ? 'active' : 'blocked';
+    } else if (action === 'suspend') {
+      newStatus = user.status === 'suspended' ? 'active' : 'suspended';
+    }
+
+    user.status = newStatus;
     await user.save();
 
-    res.status(200).json({ message: `User is now ${user.status}`, status: user.status });
+    res.status(200).json({
+      success: true,
+      message: `User status updated to ${newStatus}`,
+      status: newStatus,
+    });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -444,47 +469,6 @@ export const deleteListingByAdmin = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-
-// export const updateListingStatus = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const { status, reasonCode, additionalReason } = req.body;
-
-//     const listing = await Listing.findById(id);
-//     if (!listing) return res.status(404).json({ message: 'Asset not found' });
-
-//     // Immutable Block Logic: যদি অলরেডি ব্লকড থাকে, তবে আর পরিবর্তন করা যাবে না
-//     if (listing.status === 'blocked') {
-//       return res.status(403).json({ message: 'Action Denied. This asset is permanently blocked.' });
-//     }
-
-//     // Status Update
-//     listing.status = status;
-
-//     // যদি রিজেক্ট বা ব্লক করা হয়, তবে প্রোমোশন কিল করতে হবে
-//     if (status === 'rejected' || status === 'blocked') {
-//       listing.rejectionReason = reasonCode || '';
-//       listing.additionalReason = additionalReason || '';
-
-//       // Kill Promotion Logic
-//       listing.promotion.isPromoted = false;
-//       listing.promotion.level = 0;
-//       listing.promotion.boost.isActive = false;
-//       listing.promotion.ppc.isActive = false;
-//     }
-
-//     // যদি অ্যাপ্রুভ করা হয়, তবে রিজন ক্লিন করে দাও
-//     if (status === 'approved') {
-//       listing.rejectionReason = '';
-//       listing.additionalReason = '';
-//     }
-
-//     await listing.save();
-//     res.status(200).json({ success: true, message: `Status updated to ${status} successfully` });
-//   } catch (error) {
-//     res.status(500).json({ message: error.message });
-//   }
-// };
 
 export const updateListingStatus = async (req, res) => {
   try {
@@ -613,136 +597,6 @@ export const exportUsersExcel = async (req, res) => {
     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 };
-
-// export const exportUsersExcel = async (req, res) => {
-//   try {
-//     const userCursor = User.find({}).select('-password').cursor();
-//     const workbook = new ExcelJS.Workbook();
-//     const worksheet = workbook.addWorksheet('System All Users');
-
-//     worksheet.columns = [
-//       { header: 'ID', key: '_id', width: 25 },
-//       { header: 'FULL NAME', key: 'fullName', width: 25 },
-//       { header: 'EMAIL', key: 'email', width: 30 },
-//       { header: 'USERNAME', key: 'username', width: 20 },
-//       { header: 'ROLE', key: 'role', width: 12 },
-//       { header: 'STATUS', key: 'status', width: 12 },
-//       { header: 'COUNTRY', key: 'country', width: 15 },
-//       { header: 'CREATOR STATUS', key: 'creatorStatus', width: 15 },
-//       { header: 'JOIN DATE', key: 'createdAt', width: 20 },
-//     ];
-
-//     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-//     worksheet.getRow(1).fill = {
-//       type: 'pattern',
-//       pattern: 'solid',
-//       fgColor: { argb: 'FFEA580C' },
-//     };
-
-//     let count = 0;
-//     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
-//       const profile = user.profile || {};
-//       const creatorRequest = user.creatorRequest || {};
-
-//       worksheet.addRow({
-//         _id: user._id.toString(),
-//         fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'N/A',
-//         email: user.email || 'N/A',
-//         username: user.username || 'N/A',
-//         role: (user.role || 'user').toUpperCase(),
-//         status: (user.status || 'active').toUpperCase(),
-//         country: profile.country || 'N/A',
-//         creatorStatus: creatorRequest.isApplied
-//           ? (creatorRequest.status || 'pending').toUpperCase()
-//           : 'NO REQUEST',
-//         createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : 'N/A',
-//       });
-//       count++;
-//     }
-
-//     const fileName = `WCM_All_Users_${new Date().toISOString().split('T')[0]}.xlsx`;
-
-//     res.setHeader(
-//       'Content-Type',
-//       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-//     );
-//     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-
-//     await workbook.xlsx.write(res);
-//     return res.end();
-//   } catch (error) {
-//     console.error('EXPORT ERROR:', error);
-//     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
-//   }
-// };
-
-// export const exportTransactionsExcel = async (req, res) => {
-//   try {
-//     const transactionCursor = Transaction.find({})
-//       .populate('creator', 'firstName lastName email username')
-//       .populate('listing', 'title')
-//       .sort({ createdAt: -1 })
-//       .cursor();
-
-//     const workbook = new ExcelJS.Workbook();
-//     const worksheet = workbook.addWorksheet('Payment Report');
-
-//     worksheet.columns = [
-//       { header: 'DATE', key: 'createdAt', width: 15 },
-//       { header: 'INVOICE NO', key: 'invoiceNumber', width: 20 },
-//       { header: 'CREATOR', key: 'creatorName', width: 25 },
-//       { header: 'LISTING', key: 'listingTitle', width: 30 },
-//       { header: 'PACKAGE', key: 'packageType', width: 12 },
-//       { header: 'CURRENCY', key: 'currency', width: 10 },
-//       { header: 'AMOUNT PAID', key: 'amountPaid', width: 15 },
-//       { header: 'FX RATE', key: 'fxRate', width: 10 },
-//       { header: 'EUR (INTERNAL)', key: 'amountInEUR', width: 15 },
-//       { header: 'VAT (19% EUR)', key: 'vatAmount', width: 15 },
-//       { header: 'STRIPE ID', key: 'stripeSessionId', width: 30 },
-//     ];
-
-//     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-//     worksheet.getRow(1).fill = {
-//       type: 'pattern',
-//       pattern: 'solid',
-//       fgColor: { argb: 'FFEA580C' },
-//     };
-
-//     let count = 0;
-//     for (let tx = await transactionCursor.next(); tx != null; tx = await transactionCursor.next()) {
-//       worksheet.addRow({
-//         createdAt: tx.createdAt ? tx.createdAt.toISOString().split('T')[0] : 'N/A',
-//         invoiceNumber: tx.invoiceNumber || 'N/A',
-//         creatorName: tx.creator
-//           ? `${tx.creator.firstName || ''} ${tx.creator.lastName || ''}`.trim()
-//           : 'N/A',
-//         listingTitle: tx.listing ? tx.listing.title : 'Deleted Listing',
-//         packageType: (tx.packageType || '').toUpperCase(),
-//         currency: (tx.currency || '').toUpperCase(),
-//         amountPaid: tx.amountPaid,
-//         fxRate: tx.fxRate,
-//         amountInEUR: (tx.amountInEUR || 0).toFixed(2),
-//         vatAmount: (tx.vatAmount || 0).toFixed(2),
-//         stripeSessionId: tx.stripeSessionId,
-//       });
-//       count++;
-//     }
-
-//     const fileName = `Payment_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
-
-//     res.setHeader(
-//       'Content-Type',
-//       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-//     );
-//     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-
-//     await workbook.xlsx.write(res);
-//     return res.end();
-//   } catch (error) {
-//     console.error('TRANSACTION EXPORT ERROR:', error);
-//     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
-//   }
-// };
 
 export const exportTransactionsExcel = async (req, res) => {
   try {
@@ -1220,5 +1074,20 @@ export const getAdminStats = async (req, res) => {
   } catch (error) {
     console.error('Admin Stats Error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
+export const getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id).select('-password').lean();
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Entity not found' });
+    }
+
+    res.status(200).json({ success: true, user });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };

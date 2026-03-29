@@ -22,6 +22,7 @@ import {
   getPromotedListings,
   getTagsByCategory,
   getAllCategories,
+  getUserById,
 } from '../controllers/adminController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 import upload from '../config/multer.js';
@@ -42,6 +43,7 @@ router.get('/promoted-listings', getPromotedListings);
 router.get('/users', getAllUsers);
 router.get('/creator-requests', getCreatorRequests);
 router.get('/export-users', exportUsersExcel);
+router.get('/users/:id', getUserById);
 
 router.post('/categories', createCategory);
 router.post('/tags', createTag);

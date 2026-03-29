@@ -28,7 +28,7 @@ const userSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['active', 'blocked'],
+      enum: ['active', 'blocked', 'suspended', 'pending_review'],
       default: 'active',
     },
     creatorRequest: {
