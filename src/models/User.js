@@ -80,6 +80,7 @@ const userSchema = new mongoose.Schema(
       vatLastChecked: {
         type: Date,
       },
+
       // -------------------------------
 
       language: { type: String },
@@ -95,6 +96,7 @@ const userSchema = new mongoose.Schema(
       lastUpdated: { type: Date },
       data: { type: Object },
     },
+    listingsCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
