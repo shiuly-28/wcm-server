@@ -683,50 +683,148 @@ export const exportTransactionsExcel = async (req, res) => {
   }
 };
 
+// export const getAllTransactions = async (req, res) => {
+//   try {
+//     const {
+//       page = 1,
+//       limit = 10,
+//       search = '',
+//       filter = 'all', // all, today, month, year
+//     } = req.query;
+
+//     let query = { status: 'completed' };
+
+//     // --- ১. ডেট ফিল্টারিং লজিক ---
+//     const now = new Date();
+//     if (filter === 'today') {
+//       const startOfToday = new Date(now.setHours(0, 0, 0, 0));
+//       query.createdAt = { $gte: startOfToday };
+//     } else if (filter === 'month') {
+//       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+//       query.createdAt = { $gte: startOfMonth };
+//     } else if (filter === 'year') {
+//       const startOfYear = new Date(now.getFullYear(), 0, 1);
+//       query.createdAt = { $gte: startOfYear };
+//     }
+
+//     // --- ২. গ্লোবাল সার্চ লজিক ---
+//     if (search) {
+//       // ইউজারের নাম বা ইমেইল দিয়ে সার্চ করার জন্য প্রথমে ইউজারদের খুঁজে বের করা
+//       const users = await User.find({
+//         $or: [
+//           { firstName: { $regex: search, $options: 'i' } },
+//           { lastName: { $regex: search, $options: 'i' } },
+//           { email: { $regex: search, $options: 'i' } },
+//           { username: { $regex: search, $options: 'i' } },
+//         ],
+//       }).select('_id');
+
+//       const userIds = users.map((u) => u._id);
+
+//       // ট্রানজেকশন টেবিলে সার্চ (Invoice, Package Type বা User ID দিয়ে)
+//       query.$or = [
+//         { invoiceNumber: { $regex: search, $options: 'i' } },
+//         { packageType: { $regex: search, $options: 'i' } },
+//         { stripeSessionId: { $regex: search, $options: 'i' } },
+//         { creator: { $in: userIds } },
+//       ];
+//     }
+
+//     const transactions = await Transaction.find(query)
+//       .populate('creator', 'firstName lastName email username')
+//       .populate('listing', 'title')
+//       .sort({ createdAt: -1 })
+//       .limit(limit * 1)
+//       .skip((page - 1) * limit)
+//       .lean();
+
+//     const count = await Transaction.countDocuments(query);
+
+//     // --- ৩. ডাটা ফরম্যাটিং ---
+//     const formattedTransactions = transactions.map((tx) => {
+//       const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
+
+//       return {
+//         _id: tx._id,
+//         userId: tx.creator?._id || 'N/A',
+//         creatorName: tx.creator ? `${tx.creator.firstName} ${tx.creator.lastName}` : 'Unknown',
+//         creatorEmail: tx.creator?.email,
+//         listingId: tx.listing?._id || 'N/A',
+//         listingTitle: tx.listing?.title || 'Deleted Listing',
+//         type: tx.packageType,
+//         amount: tx.amountPaid,
+//         currency: (tx.currency || 'EUR').toUpperCase(),
+//         netAmount: Number(netAmount.toFixed(2)),
+//         vatAmount: tx.vatAmount || 0,
+//         fxRate: tx.fxRate || 1,
+//         amountInEUR: tx.amountInEUR || 0,
+//         invoiceNumber: tx.invoiceNumber || 'N/A',
+//         stripeId: tx.stripeSessionId,
+//         createdAt: tx.createdAt,
+//       };
+//     });
+
+//     // সামারি স্ট্যাট (ঐচ্ছিক কিন্তু অ্যাডমিনের জন্য দরকারি)
+//     const totalRevenue = formattedTransactions.reduce((acc, curr) => acc + curr.amountInEUR, 0);
+
+//     res.status(200).json({
+//       success: true,
+//       transactions: formattedTransactions,
+//       pagination: {
+//         totalCount: count,
+//         totalPages: Math.ceil(count / limit),
+//         currentPage: Number(page),
+//       },
+//       stats: {
+//         totalEURInPage: Number(totalRevenue.toFixed(2)),
+//       },
+//     });
+//   } catch (error) {
+//     console.error('GetAllTransactions Error:', error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
+
+// --- ১. নির্দিষ্ট ইউজার ফিল্টারসহ সব ট্রানজ্যাকশন দেখা ---
+
 export const getAllTransactions = async (req, res) => {
   try {
-    const {
-      page = 1,
-      limit = 10,
-      search = '',
-      filter = 'all', // all, today, month, year
-    } = req.query;
+    const { page = 1, limit = 10, search = '', filter = 'all', userId } = req.query;
 
     let query = { status: 'completed' };
 
-    // --- ১. ডেট ফিল্টারিং লজিক ---
-    const now = new Date();
-    if (filter === 'today') {
-      const startOfToday = new Date(now.setHours(0, 0, 0, 0));
-      query.createdAt = { $gte: startOfToday };
-    } else if (filter === 'month') {
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      query.createdAt = { $gte: startOfMonth };
-    } else if (filter === 'year') {
-      const startOfYear = new Date(now.getFullYear(), 0, 1);
-      query.createdAt = { $gte: startOfYear };
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      query.creator = userId;
     }
 
-    // --- ২. গ্লোবাল সার্চ লজিক ---
+    const now = new Date();
+    if (filter === 'today') {
+      query.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
+    } else if (filter === 'month') {
+      query.createdAt = { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
+    } else if (filter === 'year') {
+      query.createdAt = { $gte: new Date(now.getFullYear(), 0, 1) };
+    }
+
     if (search) {
-      // ইউজারের নাম বা ইমেইল দিয়ে সার্চ করার জন্য প্রথমে ইউজারদের খুঁজে বের করা
       const users = await User.find({
         $or: [
           { firstName: { $regex: search, $options: 'i' } },
-          { lastName: { $regex: search, $options: 'i' } },
           { email: { $regex: search, $options: 'i' } },
           { username: { $regex: search, $options: 'i' } },
         ],
       }).select('_id');
 
-      const userIds = users.map((u) => u._id);
-
-      // ট্রানজেকশন টেবিলে সার্চ (Invoice, Package Type বা User ID দিয়ে)
-      query.$or = [
-        { invoiceNumber: { $regex: search, $options: 'i' } },
-        { packageType: { $regex: search, $options: 'i' } },
-        { stripeSessionId: { $regex: search, $options: 'i' } },
-        { creator: { $in: userIds } },
+      query.$and = [
+        { ...query }, // আগের ফিল্টারগুলো বজায় রাখা
+        {
+          $or: [
+            { invoiceNumber: { $regex: search, $options: 'i' } },
+            { packageType: { $regex: search, $options: 'i' } },
+            { stripeSessionId: { $regex: search, $options: 'i' } },
+            { creator: { $in: users.map((u) => u._id) } },
+          ],
+        },
       ];
     }
 
@@ -740,48 +838,74 @@ export const getAllTransactions = async (req, res) => {
 
     const count = await Transaction.countDocuments(query);
 
-    // --- ৩. ডাটা ফরম্যাটিং ---
-    const formattedTransactions = transactions.map((tx) => {
-      const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
-
-      return {
-        _id: tx._id,
-        userId: tx.creator?._id || 'N/A',
-        creatorName: tx.creator ? `${tx.creator.firstName} ${tx.creator.lastName}` : 'Unknown',
-        creatorEmail: tx.creator?.email,
-        listingId: tx.listing?._id || 'N/A',
-        listingTitle: tx.listing?.title || 'Deleted Listing',
-        type: tx.packageType,
-        amount: tx.amountPaid,
-        currency: (tx.currency || 'EUR').toUpperCase(),
-        netAmount: Number(netAmount.toFixed(2)),
-        vatAmount: tx.vatAmount || 0,
-        fxRate: tx.fxRate || 1,
-        amountInEUR: tx.amountInEUR || 0,
-        invoiceNumber: tx.invoiceNumber || 'N/A',
-        stripeId: tx.stripeSessionId,
-        createdAt: tx.createdAt,
-      };
-    });
-
-    // সামারি স্ট্যাট (ঐচ্ছিক কিন্তু অ্যাডমিনের জন্য দরকারি)
-    const totalRevenue = formattedTransactions.reduce((acc, curr) => acc + curr.amountInEUR, 0);
-
     res.status(200).json({
       success: true,
-      transactions: formattedTransactions,
+      transactions, // এখানে সরাসরি ডাটাবেজ অবজেক্ট পাঠাচ্ছি
       pagination: {
         totalCount: count,
         totalPages: Math.ceil(count / limit),
         currentPage: Number(page),
       },
-      stats: {
-        totalEURInPage: Number(totalRevenue.toFixed(2)),
-      },
     });
   } catch (error) {
-    console.error('GetAllTransactions Error:', error);
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const exportTransactionsByRange = async (req, res) => {
+  try {
+    const { startDate, endDate, userId } = req.query;
+
+    let query = { status: 'completed' };
+
+    if (startDate && endDate) {
+      query.createdAt = {
+        $gte: new Date(new Date(startDate).setHours(0, 0, 0, 0)),
+        $lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)),
+      };
+    }
+
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      query.creator = userId;
+    }
+
+    const transactions = await Transaction.find(query)
+      .populate('creator', 'firstName lastName email')
+      .populate('listing', 'title')
+      .sort({ createdAt: -1 });
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Custom Payment Report');
+
+    worksheet.columns = [
+      { header: 'DATE', key: 'date', width: 15 },
+      { header: 'INVOICE', key: 'invoice', width: 20 },
+      { header: 'CREATOR', key: 'creator', width: 25 },
+      { header: 'PACKAGE', key: 'package', width: 15 },
+      { header: 'EUR (NET)', key: 'amount', width: 15 },
+      { header: 'VAT', key: 'vat', width: 10 },
+    ];
+
+    worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEA580C' } };
+
+    transactions.forEach(tx => {
+      worksheet.addRow({
+        date: tx.createdAt.toISOString().split('T')[0],
+        invoice: tx.invoiceNumber,
+        creator: `${tx.creator?.firstName} ${tx.creator?.lastName}`,
+        package: tx.packageType.toUpperCase(),
+        amount: tx.amountInEUR,
+        vat: tx.vatAmount,
+      });
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=Transactions_${startDate}_to_${endDate}.xlsx`);
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    res.status(500).json({ message: 'Export failed' });
   }
 };
 

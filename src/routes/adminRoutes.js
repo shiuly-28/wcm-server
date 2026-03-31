@@ -23,6 +23,7 @@ import {
   getTagsByCategory,
   getAllCategories,
   getUserById,
+  exportTransactionsByRange,
 } from '../controllers/adminController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 import upload from '../config/multer.js';
@@ -38,6 +39,7 @@ router.use(authorizeRoles('admin'));
 router.get('/stats', getAdminStats);
 router.get('/transactions', getAllTransactions);
 router.get('/export-transactions', exportTransactionsExcel);
+router.get('/export-transactions-range', exportTransactionsByRange);
 router.get('/listings', manageListings);
 router.get('/promoted-listings', getPromotedListings);
 router.get('/users', getAllUsers);
