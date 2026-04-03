@@ -24,7 +24,7 @@ router.delete('/:id', authMiddleware, authorizeRoles('admin'), deleteBlog);
 
 // --- COMMENT ROUTES ---
 router.get('/:blogId/comments', getCommentsByBlog);
-router.post('/comments', authMiddleware, createComment); // User and Admin both can use this
-router.delete('/comments/:id', authMiddleware, authorizeRoles('admin'), deleteComment); // Security logic handled in controller
+router.post('/comments', authMiddleware, createComment);
+router.delete('/comments/:id', authMiddleware, deleteComment);
 
 export default router;

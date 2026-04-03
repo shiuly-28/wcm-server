@@ -25,7 +25,11 @@ const commentSchema = new mongoose.Schema(
 
     isDeleted: { type: Boolean, default: false },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
 
 commentSchema.virtual('replies', {

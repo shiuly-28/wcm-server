@@ -88,21 +88,28 @@ export const updateBlog = async (req, res) => {
   }
 };
 
-// --- GET ALL BLOGS (with Pagination) ---
+// --- GET ALL BLOGS (with Offset-based Pagination) ---
 export const getBlogs = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
+    const offset = parseInt(req.query.offset) || 0;
     const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
 
-    const blogs = await Blog.find().sort({ createdAt: -1 }).skip(skip).limit(limit);
+    const blogs = await Blog.find()
+      .sort({ createdAt: -1 })
+      .skip(offset)
+      .limit(limit);
 
     const total = await Blog.countDocuments();
 
     res.status(200).json({
       success: true,
       blogs,
-      pagination: { total, page, totalPages: Math.ceil(total / limit) },
+      pagination: {
+        total,
+        offset,
+        limit,
+        hasMore: offset + blogs.length < total 
+      },
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

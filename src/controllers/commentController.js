@@ -1,6 +1,5 @@
 import Comment from '../models/Comment.js';
 
-// --- CREATE COMMENT / REPLY ---
 export const createComment = async (req, res) => {
   try {
     const { blogId, text, parentCommentId } = req.body;
@@ -19,7 +18,6 @@ export const createComment = async (req, res) => {
   }
 };
 
-// --- GET COMMENTS FOR A BLOG ---
 export const getCommentsByBlog = async (req, res) => {
   try {
     // শুধুমাত্র মেইন কমেন্টগুলো আনবে, রিপ্লাইগুলো পপুলেট হবে
@@ -37,15 +35,17 @@ export const getCommentsByBlog = async (req, res) => {
   }
 };
 
-// --- DELETE COMMENT (Admin Only or Owner) ---
 export const deleteComment = async (req, res) => {
   try {
     const comment = await Comment.findById(req.params.id);
     if (!comment) return res.status(404).json({ message: 'Comment not found' });
 
-    // Only Admin or the User who commented can delete
     if (req.user.role === 'admin' || comment.user.toString() === req.user._id.toString()) {
-      await Comment.deleteMany({ $or: [{ _id: req.params.id }, { parentComment: req.params.id }] });
+      // কমেন্ট এবং তার আন্ডারে থাকা সব রিপ্লাই একসাথে ডিলিট হবে
+      await Comment.deleteMany({
+        $or: [{ _id: req.params.id }, { parentComment: req.params.id }],
+      });
+
       return res.status(200).json({ message: 'Comment deleted successfully' });
     }
 
