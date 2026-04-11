@@ -335,8 +335,16 @@ export const deleteUserAccount = async (req, res) => {
 export const getPublicProfile = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
+
+    let query;
+
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      query = { _id: id };
+    } else {
+      query = {
+        $or: [{ username: id.toLowerCase() }, { slug: id }],
+      };
+    }
 
     const user = await User.findOne(query)
       .select('-password -email -isAdmin -creatorRequest.rejectionReason')
