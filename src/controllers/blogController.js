@@ -62,15 +62,53 @@ export const createBlog = async (req, res) => {
 };
 
 // --- ADMIN ONLY: Update/Delete Blog ---
+// export const updateBlog = async (req, res) => {
+//   try {
+//     let updateData = { ...req.body };
+
+//     // মেইন ইমেজ আপডেট
+//     const mainBanner = req.files?.find((file) => file.fieldname === 'image');
+//     if (mainBanner) updateData.image = mainBanner.path;
+
+//     // কন্টেন্ট পার্স এবং গ্রিড ইমেজ আপডেট
+//     if (req.body.content) {
+//       let parsedContent = JSON.parse(req.body.content);
+//       if (req.files) {
+//         parsedContent = parsedContent.map((block, index) => {
+//           const fieldName = `gridImages_${index}`;
+//           const newImages = req.files.filter((f) => f.fieldname === fieldName).map((f) => f.path);
+//           if (newImages.length > 0) {
+//             return { ...block, images: [...(block.images || []), ...newImages] };
+//           }
+//           return block;
+//         });
+//       }
+//       updateData.content = parsedContent;
+//     }
+
+//     const updatedBlog = await Blog.findByIdAndUpdate(req.params.id, updateData, { new: true });
+//     res.status(200).json({ success: true, blog: updatedBlog });
+//   } catch (error) {
+//     res.status(500).json({ message: error.message });
+//   }
+// };
+
 export const updateBlog = async (req, res) => {
   try {
+    const { id } = req.params;
     let updateData = { ...req.body };
 
-    // মেইন ইমেজ আপডেট
+    const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
+
+    const blog = await Blog.findOne(query);
+
+    if (!blog) {
+      return res.status(404).json({ success: false, message: 'Blog not found' });
+    }
+
     const mainBanner = req.files?.find((file) => file.fieldname === 'image');
     if (mainBanner) updateData.image = mainBanner.path;
 
-    // কন্টেন্ট পার্স এবং গ্রিড ইমেজ আপডেট
     if (req.body.content) {
       let parsedContent = JSON.parse(req.body.content);
       if (req.files) {
@@ -86,10 +124,11 @@ export const updateBlog = async (req, res) => {
       updateData.content = parsedContent;
     }
 
-    const updatedBlog = await Blog.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    const updatedBlog = await Blog.findByIdAndUpdate(blog._id, updateData, { new: true });
+
     res.status(200).json({ success: true, blog: updatedBlog });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -99,10 +138,7 @@ export const getBlogs = async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
     const limit = parseInt(req.query.limit) || 10;
 
-    const blogs = await Blog.find()
-      .sort({ createdAt: -1 })
-      .skip(offset)
-      .limit(limit);
+    const blogs = await Blog.find().sort({ createdAt: -1 }).skip(offset).limit(limit);
 
     const total = await Blog.countDocuments();
 
@@ -113,7 +149,7 @@ export const getBlogs = async (req, res) => {
         total,
         offset,
         limit,
-        hasMore: offset + blogs.length < total 
+        hasMore: offset + blogs.length < total,
       },
     });
   } catch (error) {
@@ -167,13 +203,36 @@ export const getBlogById = async (req, res) => {
   }
 };
 
+// export const deleteBlog = async (req, res) => {
+//   try {
+//     await Blog.findByIdAndDelete(req.params.id);
+//     // ব্লগ ডিলিট হলে ওর আন্ডারে সব কমেন্ট ডিলিট করে দেওয়া ভালো
+//     await Comment.deleteMany({ blogId: req.params.id });
+//     res.status(200).json({ message: 'Blog and associated comments deleted' });
+//   } catch (error) {
+//     res.status(500).json({ message: error.message });
+//   }
+// };
+
 export const deleteBlog = async (req, res) => {
   try {
-    await Blog.findByIdAndDelete(req.params.id);
-    // ব্লগ ডিলিট হলে ওর আন্ডারে সব কমেন্ট ডিলিট করে দেওয়া ভালো
-    await Comment.deleteMany({ blogId: req.params.id });
-    res.status(200).json({ message: 'Blog and associated comments deleted' });
+    const { id } = req.params;
+
+    const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
+
+    const blog = await Blog.findOne(query);
+
+    if (!blog) {
+      return res.status(404).json({ message: 'Blog not found' });
+    }
+
+    await Blog.findByIdAndDelete(blog._id);
+
+    await Comment.deleteMany({ blogId: blog._id });
+
+    res.status(200).json({ message: 'Blog and associated comments deleted successfully' });
   } catch (error) {
+    console.error('Delete Blog Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
