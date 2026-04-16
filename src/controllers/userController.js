@@ -7,6 +7,7 @@ import Listing from '../models/Listing.js';
 import { validateVatWithVIES } from '../utils/vatHelper.js';
 import slugify from 'slugify';
 import mongoose from 'mongoose';
+import { redisClient } from '../config/redis.js';
 
 // ১. Register
 export const registerUser = async (req, res) => {
@@ -236,6 +237,47 @@ export const updateUserProfile = async (req, res) => {
 };
 
 // ৭. (creator update)
+// export const updateCreatorProfile = async (req, res) => {
+//   try {
+//     if (req.user.role !== 'creator') {
+//       return res
+//         .status(403)
+//         .json({ message: 'Access denied. Only creators can update these fields.' });
+//     }
+
+//     const { displayName, bio, country, city, language, websiteLink, socialLink } = req.body;
+
+//     const updateFields = {
+//       'profile.displayName': displayName,
+//       'profile.bio': bio,
+//       'profile.country': country,
+//       'profile.city': city,
+//       'profile.language': language,
+//       'profile.websiteLink': websiteLink,
+//       'profile.socialLink': socialLink,
+//     };
+
+//     if (req.files) {
+//       if (req.files.profileImage) {
+//         updateFields['profile.profileImage'] = req.files.profileImage[0].path;
+//       }
+//       if (req.files.coverImage) {
+//         updateFields['profile.coverImage'] = req.files.coverImage[0].path;
+//       }
+//     }
+
+//     const user = await User.findByIdAndUpdate(
+//       req.user._id,
+//       { $set: updateFields },
+//       { new: true }
+//     ).select('-password');
+
+//     res.status(200).json({ message: 'Creator profile updated', user });
+//   } catch (error) {
+//     res.status(500).json({ message: error.message });
+//   }
+// };
+
 export const updateCreatorProfile = async (req, res) => {
   try {
     if (req.user.role !== 'creator') {
@@ -270,6 +312,20 @@ export const updateCreatorProfile = async (req, res) => {
       { $set: updateFields },
       { new: true }
     ).select('-password');
+
+    // --- Redis Cache Invalidation ---
+    // প্রোফাইল আপডেট হলে পুরনো ক্যাশ মুছে ফেলা হচ্ছে
+    const profileIdCacheKey = `user:profile:${user._id.toString()}`;
+    const profileUsernameCacheKey = `user:profile:${user.username.toLowerCase()}`;
+
+    // ইউজার যদি স্লাগ ব্যবহার করে থাকে তবে সেটিও মুছে দেওয়া ভালো
+    const keysToDelete = [profileIdCacheKey, profileUsernameCacheKey];
+    if (user.slug) {
+      keysToDelete.push(`user:profile:${user.slug.toLowerCase()}`);
+    }
+
+    await redisClient.del(keysToDelete);
+    // --------------------------------
 
     res.status(200).json({ message: 'Creator profile updated', user });
   } catch (error) {
@@ -309,7 +365,19 @@ export const deleteUserAccount = async (req, res) => {
 // ৯. Public Profile View
 // export const getPublicProfile = async (req, res) => {
 //   try {
-//     const user = await User.findById(req.params.id)
+//     const { id } = req.params;
+
+//     let query;
+
+//     if (mongoose.Types.ObjectId.isValid(id)) {
+//       query = { _id: id };
+//     } else {
+//       query = {
+//         $or: [{ username: id.toLowerCase() }, { slug: id }],
+//       };
+//     }
+
+//     const user = await User.findOne(query)
 //       .select('-password -email -isAdmin -creatorRequest.rejectionReason')
 //       .lean();
 
@@ -318,7 +386,7 @@ export const deleteUserAccount = async (req, res) => {
 //     }
 
 //     const listingsCount = await Listing.countDocuments({
-//       creatorId: req.params.id,
+//       creatorId: user._id,
 //       status: 'approved',
 //     });
 
@@ -336,8 +404,16 @@ export const getPublicProfile = async (req, res) => {
   try {
     const { id } = req.params;
 
-    let query;
+    // ১. ক্যাশ কি (Key) তৈরি
+    const cacheKey = `user:profile:${id.toLowerCase()}`;
 
+    // ২. প্রথমে Redis চেক করা
+    const cachedProfile = await redisClient.get(cacheKey);
+    if (cachedProfile) {
+      return res.status(200).json(JSON.parse(cachedProfile));
+    }
+
+    let query;
     if (mongoose.Types.ObjectId.isValid(id)) {
       query = { _id: id };
     } else {
@@ -359,10 +435,15 @@ export const getPublicProfile = async (req, res) => {
       status: 'approved',
     });
 
-    res.status(200).json({
+    const responseData = {
       user,
       listingsCount,
-    });
+    };
+
+    // ৩. Redis-এ সেভ করা (যেমন ১ ঘণ্টার জন্য)
+    await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 3600 });
+
+    res.status(200).json(responseData);
   } catch (error) {
     console.error('Public Profile Error:', error);
     res.status(500).json({ message: 'Internal Server Error' });

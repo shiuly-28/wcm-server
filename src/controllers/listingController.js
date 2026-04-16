@@ -12,6 +12,8 @@ import { createAuditLog } from '../utils/logger.js';
 import { applyPromotionLogic, resetPPC } from '../utils/promotionHelper.js';
 import slugify from 'slugify';
 import { continentMapping } from '../constants/continentData.js';
+import { redisClient } from '../config/redis.js';
+import crypto from 'crypto';
 
 export const handlePpcClick = async (req, res) => {
   try {
@@ -109,15 +111,91 @@ export const handlePpcClick = async (req, res) => {
   }
 };
 
+// export const getCategoriesAndTags = async (req, res) => {
+//   try {
+//     const [categories, regions] = await Promise.all([
+//       Category.find().sort({ order: 1 }).lean(),
+//       mongoose.model('Listing').distinct('region', { status: 'approved' }),
+//     ]);
+
+//     const limit = parseInt(req.query.limit) || 10;
+//     const page = parseInt(req.query.page) || 1;
+//     const skip = (page - 1) * limit;
+
+//     const tagsWithCount = await Tag.aggregate([
+//       { $sort: { title: 1 } },
+//       { $skip: skip },
+//       { $limit: limit },
+//       {
+//         $lookup: {
+//           from: 'listings',
+//           localField: '_id',
+//           foreignField: 'culturalTags',
+//           as: 'matchedListings',
+//         },
+//       },
+//       {
+//         $project: {
+//           _id: 1,
+//           title: 1,
+//           image: 1,
+//           listingCount: {
+//             $size: {
+//               $filter: {
+//                 input: '$matchedListings',
+//                 as: 'listing',
+//                 cond: { $eq: ['$$listing.status', 'approved'] },
+//               },
+//             },
+//           },
+//         },
+//       },
+//     ]);
+
+//     const totalTags = await Tag.countDocuments();
+
+//     const sortedRegions = regions.filter(Boolean).sort();
+
+//     res.status(200).json({
+//       success: true,
+//       categories: categories || [],
+//       regions: sortedRegions || [],
+//       tags: tagsWithCount || [],
+//       pagination: {
+//         totalTags,
+//         currentPage: page,
+//         totalPages: Math.ceil(totalTags / limit),
+//         hasMore: page * limit < totalTags,
+//       },
+//     });
+//   } catch (error) {
+//     console.error('Meta Data Error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Error fetching meta data',
+//       error: error.message,
+//     });
+//   }
+// };
+
 export const getCategoriesAndTags = async (req, res) => {
   try {
+    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page) || 1;
+
+    const cacheKey = `meta:categories_tags:p${page}:l${limit}`;
+
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      // console.log("Serving Meta from Cache"); // for debugging
+      return res.status(200).json(JSON.parse(cachedData));
+    }
+
     const [categories, regions] = await Promise.all([
       Category.find().sort({ order: 1 }).lean(),
       mongoose.model('Listing').distinct('region', { status: 'approved' }),
     ]);
 
-    const limit = parseInt(req.query.limit) || 10;
-    const page = parseInt(req.query.page) || 1;
     const skip = (page - 1) * limit;
 
     const tagsWithCount = await Tag.aggregate([
@@ -151,10 +229,9 @@ export const getCategoriesAndTags = async (req, res) => {
     ]);
 
     const totalTags = await Tag.countDocuments();
-
     const sortedRegions = regions.filter(Boolean).sort();
 
-    res.status(200).json({
+    const responseData = {
       success: true,
       categories: categories || [],
       regions: sortedRegions || [],
@@ -165,7 +242,11 @@ export const getCategoriesAndTags = async (req, res) => {
         totalPages: Math.ceil(totalTags / limit),
         hasMore: page * limit < totalTags,
       },
-    });
+    };
+
+    await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 3600 });
+
+    res.status(200).json(responseData);
   } catch (error) {
     console.error('Meta Data Error:', error);
     res.status(500).json({
@@ -192,8 +273,8 @@ export const createListing = async (req, res) => {
       description,
       externalUrls,
       websiteLink,
-      region,
-      country,
+      region, // এটি হয়তো আপনার লোকাল কোনো রিজিয়ন
+      country, // ফ্রন্টএন্ড থেকে আসা দেশের নাম
       tradition,
       category,
       culturalTags,
@@ -203,31 +284,35 @@ export const createListing = async (req, res) => {
       return res.status(400).json({ message: 'Please upload an image' });
     }
 
+    // --- মহাদেশ বের করার লজিক ---
     const continent = getContinentByCountry(country);
 
     const generatedSlug = `${slugify(title, { lower: true, strict: true })}-${Date.now()}`;
     const imageUrl = req.file.path;
 
+    // URL লিস্ট প্রসেসিং
     let urlList = [];
     if (externalUrls) {
       urlList = Array.isArray(externalUrls)
         ? externalUrls
         : externalUrls
-          .split(',')
-          .map((url) => url.trim())
-          .filter((url) => url !== '');
+            .split(',')
+            .map((url) => url.trim())
+            .filter((url) => url !== '');
     }
 
+    // ট্যাগ আইডি প্রসেসিং
     let tagIds = [];
     if (culturalTags) {
       tagIds = Array.isArray(culturalTags)
         ? culturalTags
         : culturalTags
-          .split(',')
-          .map((t) => t.trim())
-          .filter((t) => t !== '');
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
     }
 
+    // নতুন লিস্টিং তৈরি (এখন continent ফিল্ডসহ)
     const newListing = await Listing.create({
       creatorId: req.user._id,
       slug: generatedSlug,
@@ -235,7 +320,7 @@ export const createListing = async (req, res) => {
       description,
       externalUrls: urlList,
       websiteLink,
-      continent,
+      continent, // এখানে অটোমেটিক মহাদেশ সেভ হচ্ছে
       region,
       country,
       tradition,
@@ -244,6 +329,7 @@ export const createListing = async (req, res) => {
       image: imageUrl,
     });
 
+    // ইউজারের লিস্টিং কাউন্ট আপডেট
     const actualCount = await Listing.countDocuments({ creatorId: req.user._id });
     await User.findByIdAndUpdate(req.user._id, {
       listingsCount: actualCount,
@@ -251,14 +337,82 @@ export const createListing = async (req, res) => {
 
     res.status(201).json({
       message: 'Listing created successfully',
-      newListing
+      newListing,
     });
-
   } catch (error) {
     console.error('Create Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
+
+// export const updateListing = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const listing = await Listing.findById(id);
+
+//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+//     if (listing.creatorId.toString() !== req.user._id.toString()) {
+//       return res.status(403).json({ message: 'Unauthorized to update' });
+//     }
+
+//     const updateData = { ...req.body };
+
+//     // 🔹 Tag Restriction (Max 5)
+//     let tags = [];
+//     if (updateData.culturalTags) {
+//       tags = Array.isArray(updateData.culturalTags)
+//         ? updateData.culturalTags
+//         : updateData.culturalTags
+//           .split(',')
+//           .map((t) => t.trim())
+//           .filter((t) => t !== '');
+
+//       if (tags.length > 5) {
+//         return res.status(400).json({ message: 'Maximum 5 cultural tags allowed' });
+//       }
+//       listing.culturalTags = tags;
+//     }
+
+//     if (listing.status !== 'approved' && listing.status !== 'blocked') {
+//       listing.status = 'pending';
+//       listing.rejectionReason = '';
+//     }
+
+//     // 🔹 Image Update
+//     if (req.file) {
+//       if (listing.image && !listing.image.startsWith('http')) {
+//         const oldImagePath = path.join(process.cwd(), listing.image);
+//         if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
+//       }
+//       listing.image = req.file.path;
+//     }
+
+//     // 🔹 Field Updates
+//     const fieldsToUpdate = [
+//       'title',
+//       'description',
+//       'region',
+//       'country',
+//       'tradition',
+//       'websiteLink',
+//       'category',
+//     ];
+//     fieldsToUpdate.forEach((field) => {
+//       if (updateData[field] !== undefined) listing[field] = updateData[field];
+//     });
+
+//     await listing.save();
+//     const finalListing = await Listing.findById(id).populate('category culturalTags');
+
+//     res.status(200).json({
+//       message: listing.status === 'approved' ? 'Update successful' : 'Submitted for re-review',
+//       updatedListing: finalListing,
+//     });
+//   } catch (error) {
+//     res.status(500).json({ message: error.message });
+//   }
+// };
 
 export const updateListing = async (req, res) => {
   try {
@@ -273,15 +427,14 @@ export const updateListing = async (req, res) => {
 
     const updateData = { ...req.body };
 
-    // 🔹 Tag Restriction (Max 5)
     let tags = [];
     if (updateData.culturalTags) {
       tags = Array.isArray(updateData.culturalTags)
         ? updateData.culturalTags
         : updateData.culturalTags
-          .split(',')
-          .map((t) => t.trim())
-          .filter((t) => t !== '');
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
 
       if (tags.length > 5) {
         return res.status(400).json({ message: 'Maximum 5 cultural tags allowed' });
@@ -294,7 +447,6 @@ export const updateListing = async (req, res) => {
       listing.rejectionReason = '';
     }
 
-    // 🔹 Image Update
     if (req.file) {
       if (listing.image && !listing.image.startsWith('http')) {
         const oldImagePath = path.join(process.cwd(), listing.image);
@@ -303,7 +455,6 @@ export const updateListing = async (req, res) => {
       listing.image = req.file.path;
     }
 
-    // 🔹 Field Updates
     const fieldsToUpdate = [
       'title',
       'description',
@@ -318,6 +469,19 @@ export const updateListing = async (req, res) => {
     });
 
     await listing.save();
+
+    const detailCacheKey = `listing:detail:${id}`;
+    const slugCacheKey = `listing:detail:${listing.slug}`;
+
+    const publicListingsKeys = await redisClient.keys('listings:public:*');
+    const metaKeys = await redisClient.keys('meta:categories_tags:*');
+
+    const keysToDelete = [detailCacheKey, slugCacheKey, ...publicListingsKeys, ...metaKeys];
+
+    if (keysToDelete.length > 0) {
+      await redisClient.del(keysToDelete);
+    }
+
     const finalListing = await Listing.findById(id).populate('category culturalTags');
 
     res.status(200).json({
@@ -325,199 +489,212 @@ export const updateListing = async (req, res) => {
       updatedListing: finalListing,
     });
   } catch (error) {
+    console.error('Update Listing Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
 
-export const getPublicListings = async (req, res) => {
-  try {
-    const {
-      filter, search, category, continent, tradition,
-      creatorId, limit, page, offset
-    } = req.query;
+// export const getPublicListings = async (req, res) => {
+//   try {
+//     const {
+//       filter, search, category, continent, tradition,
+//       creatorId, limit, page, offset
+//     } = req.query;
 
-    let query = { status: 'approved' };
+//     let query = { status: 'approved' };
 
-    if (category && category !== 'All' && category !== 'undefined') {
-      if (mongoose.Types.ObjectId.isValid(category)) {
-        query.category = category;
-      } else {
-        let categoryTitle = category
-          .replace(/-/g, ' ')
-          .replace(/\band\b/i, '&')
-          .trim();
+//     // ১. ক্যাটাগরি ফিল্টার (ID অথবা SEO Slug সাপোর্ট)
+//     if (category && category !== 'All' && category !== 'undefined') {
+//       if (mongoose.Types.ObjectId.isValid(category)) {
+//         query.category = category;
+//       } else {
+//         // 'pottery-art' কে 'pottery art' বানিয়ে কেস-ইনসেনসিটিভ সার্চ
+//         const categoryTitle = category.replace(/-/g, ' ');
+//         const foundCategory = await Category.findOne({
+//           title: { $regex: new RegExp(`^${categoryTitle}$`, 'i') },
+//         });
 
-        const foundCategory = await Category.findOne({
-          title: { $regex: new RegExp(`^${categoryTitle}$`, 'i') },
-        });
+//         if (foundCategory) {
+//           query.category = foundCategory._id;
+//         } else {
+//           // ক্যাটাগরি না পাওয়া গেলে একটি রেন্ডম আইডি বসানো যেন রেজাল্ট খালি আসে
+//           query.category = new mongoose.Types.ObjectId();
+//         }
+//       }
+//     }
 
-        if (foundCategory) {
-          query.category = foundCategory._id;
-        } else {
-          console.log("Category search mismatch for:", categoryTitle);
-        }
-      }
-    }
+//     // ২. কন্টিনেন্ট (মহাদেশ) ফিল্টার - [পরিবর্তিত অংশ]
+//     // এখন আমরা সরাসরি ডাটাবেজের 'continent' ফিল্ডে সার্চ করবো
+//     if (continent && continent !== 'All' && continent !== 'All Regions' && continent !== 'undefined') {
+//       // যদি স্লাগ আকারে আসে (যেমন: asia-pacific) তবে স্পেস করে দেব
+//       const continentName = continent.replace(/-/g, ' ');
+//       // সরাসরি 'continent' ফিল্ডে কেস-ইনসেনসিটিভ সার্চ
+//       query.continent = { $regex: new RegExp(`^${continentName}$`, 'i') };
+//     }
 
-    if (continent && continent !== 'All' && continent !== 'All Regions' && continent !== 'undefined') {
-      query.continent = { $regex: new RegExp(`^${continent}$`, 'i') };
-    }
+//     // ৩. ট্র্যাডিশন ফিল্টার
+//     if (tradition && tradition !== 'All') {
+//       query.tradition = { $regex: tradition, $options: 'i' };
+//     }
 
-    if (tradition && tradition !== 'All') {
-      query.tradition = { $regex: tradition, $options: 'i' };
-    }
+//     // ৪. ডেট ফিল্টার (Today / This week)
+//     const now = new Date();
+//     if (filter === 'Today') {
+//       const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+//       query.createdAt = { $gte: startOfDay };
+//     } else if (filter === 'This week') {
+//       const startOfWeek = new Date();
+//       startOfWeek.setDate(now.getDate() - 7);
+//       startOfWeek.setHours(0, 0, 0, 0);
+//       query.createdAt = { $gte: startOfWeek };
+//     }
 
-    const now = new Date();
-    if (filter === 'Today') {
-      const startOfDay = new Date(now.setHours(0, 0, 0, 0));
-      query.createdAt = { $gte: startOfDay };
-    } else if (filter === 'This week') {
-      const startOfWeek = new Date();
-      startOfWeek.setDate(now.getDate() - 7);
-      startOfWeek.setHours(0, 0, 0, 0);
-      query.createdAt = { $gte: startOfWeek };
-    }
+//     if (creatorId) query.creatorId = creatorId;
 
-    if (creatorId) query.creatorId = creatorId;
+//     // ৫. সার্চ লজিক - [এখানেও continent যোগ করা হয়েছে]
+//     if (search) {
+//       const searchRegex = { $regex: search, $options: 'i' };
 
-    if (search) {
-      const searchRegex = { $regex: search, $options: 'i' };
+//       const [matchingTags, matchingCategories] = await Promise.all([
+//         Tag.find({ title: searchRegex }).distinct('_id'),
+//         Category.find({ title: searchRegex }).distinct('_id'),
+//       ]);
 
-      const [matchingTags, matchingCategories] = await Promise.all([
-        Tag.find({ title: searchRegex }).distinct('_id'),
-        Category.find({ title: searchRegex }).distinct('_id'),
-      ]);
+//       query.$or = [
+//         { title: searchRegex },
+//         { description: searchRegex },
+//         { country: searchRegex },
+//         { continent: searchRegex },
+//         { culturalTags: { $in: matchingTags } },
+//         { category: { $in: matchingCategories } },
+//       ];
+//     }
 
-      query.$or = [
-        { title: searchRegex },
-        { description: searchRegex },
-        { country: searchRegex },
-        { continent: searchRegex },
-        { culturalTags: { $in: matchingTags } },
-        { category: { $in: matchingCategories } },
-      ];
-    }
+//     // ৬. পেজিনেশন ও স্কিপ লজিক
+//     const resPerPage = parseInt(limit) || 10;
+//   const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
 
+//   // ৭. লিস্টিং ফেচিং
+//   let listings = await Listing.find(query)
+//     .populate('creatorId', 'username profile listingsCount')
+//     .populate('category', 'title')
+//     .populate('culturalTags', 'title image')
+//     .sort({
+//       isPromoted: -1,
+//       'promotion.level': -1,
+//       views: -1,
+//       createdAt: -1,
+//     })
+//     .limit(resPerPage)
+//     .skip(skip)
+//     .lean();
 
-    const resPerPage = parseInt(limit) || 10;
-    const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
+//   const totalListings = await Listing.countDocuments(query);
+//   const currentUserId = req.user ? req.user._id.toString() : null;
 
-    let listings = await Listing.find(query)
-      .populate('creatorId', 'username profile listingsCount')
-      .populate('category', 'title')
-      .populate('culturalTags', 'title image')
-      .sort({
-        isPromoted: -1,
-        'promotion.level': -1,
-        views: -1,
-        createdAt: -1,
-      })
-      .limit(resPerPage)
-      .skip(skip)
-      .lean();
+//   // ৮. ডাটা ফরম্যাটিং ও এডিশনাল স্ট্যাটস
+//   const formattedListings = await Promise.all(
+//     listings.map(async (item) => {
+//       const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
 
-    const totalListings = await Listing.countDocuments(query);
-    const currentUserId = req.user ? req.user._id.toString() : null;
+//       // ক্রিয়েটরের একটিভ লিস্টিং কাউন্ট করা
+//       const creatorActiveListings = await Listing.countDocuments({
+//         creatorId: item.creatorId?._id,
+//         status: 'approved',
+//       });
 
-    const formattedListings = await Promise.all(
-      listings.map(async (item) => {
-        const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+//       const effectiveIsPromoted =
+//         (item.promotion?.boost?.isActive && !item.promotion?.boost?.isPaused) ||
+//         (item.promotion?.ppc?.isActive && !item.promotion?.ppc?.isPaused);
 
-        const creatorActiveListings = await Listing.countDocuments({
-          creatorId: item.creatorId?._id,
-          status: 'approved',
-        });
+//       return {
+//         ...item,
+//         isPromoted: effectiveIsPromoted,
+//         isFavorited: currentUserId
+//           ? safeFavorites.some((favId) => favId.toString() === currentUserId)
+//           : false,
+//         favoritesCount: safeFavorites.length,
+//         creatorStats: {
+//           totalApprovedListings: creatorActiveListings,
+//         },
+//       };
+//     })
+//   );
 
-        const effectiveIsPromoted =
-          (item.promotion?.boost?.isActive && !item.promotion?.boost?.isPaused) ||
-          (item.promotion?.ppc?.isActive && !item.promotion?.ppc?.isPaused);
+//   // ৯. ফাইনাল রেসপন্স
+//   res.status(200).json({
+//     success: true,
+//     total: totalListings,
+//     count: formattedListings.length,
+//     currentPage: parseInt(page) || 1,
+//     nextOffset: skip + formattedListings.length,
+//     hasMore: skip + formattedListings.length < totalListings,
+//     listings: formattedListings,
+//   });
 
-        return {
-          ...item,
-          isPromoted: effectiveIsPromoted,
-          isFavorited: currentUserId
-            ? safeFavorites.some((favId) => favId.toString() === currentUserId)
-            : false,
-          favoritesCount: safeFavorites.length,
-          creatorStats: {
-            totalApprovedListings: creatorActiveListings,
-          },
-        };
-      })
-    );
+// } catch (error) {
+//   console.error('Public Listings Error:', error);
+//   res.status(500).json({ success: false, message: 'Server Error' });
+// }
+// };
 
-    res.status(200).json({
-      success: true,
-      total: totalListings,
-      count: formattedListings.length,
-      currentPage: parseInt(page) || 1,
-      nextOffset: skip + formattedListings.length,
-      hasMore: skip + formattedListings.length < totalListings,
-      listings: formattedListings,
-    });
+// export const getListingById = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { deviceId } = req.query;
+//     const userId = req.user?._id;
+//     const userAgent = req.headers['user-agent'] || 'unknown';
 
-  } catch (error) {
-    console.error('Public Listings Error:', error);
-    res.status(500).json({ success: false, message: 'Server Error' });
-  }
-};
+//     const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
 
-export const getListingById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { deviceId } = req.query;
-    const userId = req.user?._id;
-    const userAgent = req.headers['user-agent'] || 'unknown';
+//     // ২. লিস্টিং খোঁজা
+//     const listing = await Listing.findOne(query)
+//       .populate('creatorId', 'firstName lastName username profile.profileImage')
+//       .populate('category', 'title')
+//       .populate('culturalTags', 'title image');
 
-    const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
+//     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
-    const listing = await Listing.findOne(query)
-      .populate('creatorId', 'firstName lastName username profile.profileImage')
-      .populate('category', 'title')
-      .populate('culturalTags', 'title image');
+//     const actualListingId = listing._id;
 
-    if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
+//     const viewQuery = { listingId: actualListingId, type: 'view' };
+//     if (userId) {
+//       viewQuery.userId = userId;
+//     } else if (deviceId) {
+//       viewQuery.deviceId = deviceId;
+//     } else {
+//       viewQuery.userAgent = userAgent;
+//     }
 
-    const actualListingId = listing._id;
+//     const alreadyViewed = await InteractionLog.findOne(viewQuery);
 
-    const viewQuery = { listingId: actualListingId, type: 'view' };
-    if (userId) {
-      viewQuery.userId = userId;
-    } else if (deviceId) {
-      viewQuery.deviceId = deviceId;
-    } else {
-      viewQuery.userAgent = userAgent;
-    }
+//     if (!alreadyViewed) {
+//       await Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } });
 
-    const alreadyViewed = await InteractionLog.findOne(viewQuery);
+//       await InteractionLog.create({
+//         listingId: actualListingId,
+//         userId: userId || null,
+//         deviceId: deviceId || 'guest_device',
+//         type: 'view',
+//       });
 
-    if (!alreadyViewed) {
-      await Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } });
+//       const today = new Date();
+//       today.setHours(0, 0, 0, 0);
+//       await Analytics.findOneAndUpdate(
+//         { listingId: actualListingId, date: today },
+//         {
+//           $inc: { views: 1 },
+//           $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+//         },
+//         { upsert: true }
+//       );
+//     }
 
-      await InteractionLog.create({
-        listingId: actualListingId,
-        userId: userId || null,
-        deviceId: deviceId || 'guest_device',
-        type: 'view',
-      });
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      await Analytics.findOneAndUpdate(
-        { listingId: actualListingId, date: today },
-        {
-          $inc: { views: 1 },
-          $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
-        },
-        { upsert: true }
-      );
-    }
-
-    res.status(200).json(listing);
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
+//     res.status(200).json(listing);
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
 
 // export const getListingById = async (req, res) => {
 //   try {
@@ -571,6 +748,223 @@ export const getListingById = async (req, res) => {
 //     res.status(500).json({ success: false, message: error.message });
 //   }
 // };
+
+export const getPublicListings = async (req, res) => {
+  try {
+    const { filter, search, category, continent, tradition, creatorId, limit, page, offset } =
+      req.query;
+
+    // ১. ডাইনামিক ক্যাশ কি (Key) তৈরি করা
+    // কুয়েরি প্যারামিটারগুলোর একটি ইউনিক হ্যাশ তৈরি করছি যাতে ফিল্টার অনুযায়ী আলাদা ক্যাশ থাকে
+    const queryStr = JSON.stringify(req.query);
+    const hash = crypto.createHash('md5').update(queryStr).digest('hex');
+    const cacheKey = `listings:public:${hash}`;
+
+    // ২. প্রথমে Redis চেক করা
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      return res.status(200).json(JSON.parse(cachedData));
+    }
+
+    let query = { status: 'approved' };
+
+    // ৩. ক্যাটাগরি ফিল্টার
+    if (category && category !== 'All' && category !== 'undefined') {
+      if (mongoose.Types.ObjectId.isValid(category)) {
+        query.category = category;
+      } else {
+        const categoryTitle = category.replace(/-/g, ' ');
+        const foundCategory = await Category.findOne({
+          title: { $regex: new RegExp(`^${categoryTitle}$`, 'i') },
+        })
+          .select('_id')
+          .lean();
+
+        if (foundCategory) query.category = foundCategory._id;
+        else query.category = new mongoose.Types.ObjectId();
+      }
+    }
+
+    // ৪. মহাদেশ (Continent) ফিল্টার
+    if (
+      continent &&
+      continent !== 'All' &&
+      continent !== 'All Regions' &&
+      continent !== 'undefined'
+    ) {
+      const continentName = continent.replace(/-/g, ' ');
+      query.continent = { $regex: new RegExp(`^${continentName}$`, 'i') };
+    }
+
+    // ৫. ট্র্যাডিশন ফিল্টার
+    if (tradition && tradition !== 'All') {
+      query.tradition = { $regex: tradition, $options: 'i' };
+    }
+
+    // ৬. ডেট ফিল্টার
+    const now = new Date();
+    if (filter === 'Today') {
+      query.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
+    } else if (filter === 'This week') {
+      const startOfWeek = new Date();
+      startOfWeek.setDate(now.getDate() - 7);
+      query.createdAt = { $gte: startOfWeek.setHours(0, 0, 0, 0) };
+    }
+
+    if (creatorId) query.creatorId = creatorId;
+
+    // ৭. সার্চ লজিক
+    if (search) {
+      const searchRegex = { $regex: search, $options: 'i' };
+      const [matchingTags, matchingCategories] = await Promise.all([
+        Tag.find({ title: searchRegex }).distinct('_id'),
+        Category.find({ title: searchRegex }).distinct('_id'),
+      ]);
+
+      query.$or = [
+        { title: searchRegex },
+        { description: searchRegex },
+        { country: searchRegex },
+        { continent: searchRegex },
+        { culturalTags: { $in: matchingTags } },
+        { category: { $in: matchingCategories } },
+      ];
+    }
+
+    // ৮. পেজিনেশন ও ফেচিং (Lean ও Populate Optimization)
+    const resPerPage = parseInt(limit) || 10;
+    const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
+
+    const listings = await Listing.find(query)
+      .populate('creatorId', 'username profile listingsCount')
+      .populate('category', 'title')
+      .populate('culturalTags', 'title image')
+      .sort({ isPromoted: -1, 'promotion.level': -1, views: -1, createdAt: -1 })
+      .limit(resPerPage)
+      .skip(skip)
+      .lean();
+
+    const totalListings = await Listing.countDocuments(query);
+    const currentUserId = req.user ? req.user._id.toString() : null;
+
+    // ৯. ডাটা ফরম্যাটিং
+    const formattedListings = await Promise.all(
+      listings.map(async (item) => {
+        const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+
+        // কাউন্টিং লজিক অপ্টিমাইজড (সরাসরি পপুলেটেড ডাটা থেকে বা শর্ট কুয়েরি)
+        const creatorActiveListings = await Listing.countDocuments({
+          creatorId: item.creatorId?._id,
+          status: 'approved',
+        });
+
+        const effectiveIsPromoted =
+          (item.promotion?.boost?.isActive && !item.promotion?.boost?.isPaused) ||
+          (item.promotion?.ppc?.isActive && !item.promotion?.ppc?.isPaused);
+
+        return {
+          ...item,
+          isPromoted: effectiveIsPromoted,
+          isFavorited: currentUserId
+            ? safeFavorites.some((f) => f.toString() === currentUserId)
+            : false,
+          favoritesCount: safeFavorites.length,
+          creatorStats: { totalApprovedListings: creatorActiveListings },
+        };
+      })
+    );
+
+    const responseData = {
+      success: true,
+      total: totalListings,
+      count: formattedListings.length,
+      currentPage: parseInt(page) || 1,
+      nextOffset: skip + formattedListings.length,
+      hasMore: skip + formattedListings.length < totalListings,
+      listings: formattedListings,
+    };
+
+    // ১০. Redis-এ ক্যাশ করা (৫ থেকে ১৫ মিনিটের জন্য রাখা ভালো কারণ এটি বারবার বদলায়)
+    await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 600 });
+
+    res.status(200).json(responseData);
+  } catch (error) {
+    console.error('Public Listings Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+};
+
+export const getListingById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { deviceId } = req.query;
+    const userId = req.user?._id;
+    const userAgent = req.headers['user-agent'] || 'unknown';
+
+    const cacheKey = `listing:detail:${id}`;
+
+    const cachedListing = await redisClient.get(cacheKey);
+    let listing;
+
+    if (cachedListing) {
+      listing = JSON.parse(cachedListing);
+    } else {
+      const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
+      listing = await Listing.findOne(query)
+        .populate('creatorId', 'firstName lastName username profile.profileImage')
+        .populate('category', 'title')
+        .populate('culturalTags', 'title image')
+        .lean();
+
+      if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
+
+      await redisClient.set(cacheKey, JSON.stringify(listing), { EX: 1800 });
+    }
+
+    const handleViewLog = async () => {
+      try {
+        const actualListingId = listing._id;
+        const viewQuery = { listingId: actualListingId, type: 'view' };
+
+        if (userId) viewQuery.userId = userId;
+        else if (deviceId) viewQuery.deviceId = deviceId;
+        else viewQuery.userAgent = userAgent;
+
+        const alreadyViewed = await InteractionLog.findOne(viewQuery).select('_id').lean();
+
+        if (!alreadyViewed) {
+          const today = new Date().setHours(0, 0, 0, 0);
+          await Promise.all([
+            Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } }),
+            InteractionLog.create({
+              listingId: actualListingId,
+              userId: userId || null,
+              deviceId: deviceId || 'guest_device',
+              type: 'view',
+              userAgent,
+            }),
+            Analytics.findOneAndUpdate(
+              { listingId: actualListingId, date: today },
+              {
+                $inc: { views: 1 },
+                $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+              },
+              { upsert: true }
+            ),
+          ]);
+        }
+      } catch (err) {
+        console.error('View Logging Error:', err);
+      }
+    };
+
+    handleViewLog();
+
+    res.status(200).json(listing);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
 export const getCreatorListingCount = async (req, res) => {
   try {
