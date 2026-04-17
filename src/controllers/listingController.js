@@ -12,8 +12,47 @@ import { createAuditLog } from '../utils/logger.js';
 import { applyPromotionLogic, resetPPC } from '../utils/promotionHelper.js';
 import slugify from 'slugify';
 import { continentMapping } from '../constants/continentData.js';
-import { redisClient } from '../config/redis.js';
 import crypto from 'crypto';
+import {
+  buildVersionedCacheKey,
+  getCache,
+  invalidateListingCaches,
+  parseCachedJson,
+  setCache,
+} from '../utils/cache.js';
+
+const ensureListingFavoriteState = (listing) => {
+  if (!Array.isArray(listing.favorites)) {
+    listing.favorites = [];
+  }
+
+  if (!listing.promotion || typeof listing.promotion !== 'object') {
+    listing.promotion = {};
+  }
+
+  if (!listing.promotion.boost || typeof listing.promotion.boost !== 'object') {
+    listing.promotion.boost = {};
+  }
+
+  if (!listing.promotion.ppc || typeof listing.promotion.ppc !== 'object') {
+    listing.promotion.ppc = {};
+  }
+
+  listing.promotion.level ??= 0;
+  listing.promotion.boost.isActive ??= false;
+  listing.promotion.boost.isPaused ??= false;
+  listing.promotion.boost.amountPaid ??= 0;
+  listing.promotion.boost.expiresAt ??= null;
+  listing.promotion.ppc.isActive ??= false;
+  listing.promotion.ppc.isPaused ??= false;
+  listing.promotion.ppc.ppcBalance ??= 0;
+  listing.promotion.ppc.costPerClick ??= 0.1;
+  listing.promotion.ppc.amountPaid ??= 0;
+  listing.promotion.ppc.totalClicks ??= 0;
+  listing.promotion.ppc.executedClicks ??= 0;
+
+  return listing;
+};
 
 export const handlePpcClick = async (req, res) => {
   try {
@@ -63,6 +102,11 @@ export const handlePpcClick = async (req, res) => {
 
       applyPromotionLogic(listing);
       await listing.save();
+      await invalidateListingCaches({
+        id: listing._id,
+        slug: listing.slug,
+        creatorId: listing.creatorId,
+      });
 
       await InteractionLog.create({
         listingId: id,
@@ -111,84 +155,15 @@ export const handlePpcClick = async (req, res) => {
   }
 };
 
-// export const getCategoriesAndTags = async (req, res) => {
-//   try {
-//     const [categories, regions] = await Promise.all([
-//       Category.find().sort({ order: 1 }).lean(),
-//       mongoose.model('Listing').distinct('region', { status: 'approved' }),
-//     ]);
-
-//     const limit = parseInt(req.query.limit) || 10;
-//     const page = parseInt(req.query.page) || 1;
-//     const skip = (page - 1) * limit;
-
-//     const tagsWithCount = await Tag.aggregate([
-//       { $sort: { title: 1 } },
-//       { $skip: skip },
-//       { $limit: limit },
-//       {
-//         $lookup: {
-//           from: 'listings',
-//           localField: '_id',
-//           foreignField: 'culturalTags',
-//           as: 'matchedListings',
-//         },
-//       },
-//       {
-//         $project: {
-//           _id: 1,
-//           title: 1,
-//           image: 1,
-//           listingCount: {
-//             $size: {
-//               $filter: {
-//                 input: '$matchedListings',
-//                 as: 'listing',
-//                 cond: { $eq: ['$$listing.status', 'approved'] },
-//               },
-//             },
-//           },
-//         },
-//       },
-//     ]);
-
-//     const totalTags = await Tag.countDocuments();
-
-//     const sortedRegions = regions.filter(Boolean).sort();
-
-//     res.status(200).json({
-//       success: true,
-//       categories: categories || [],
-//       regions: sortedRegions || [],
-//       tags: tagsWithCount || [],
-//       pagination: {
-//         totalTags,
-//         currentPage: page,
-//         totalPages: Math.ceil(totalTags / limit),
-//         hasMore: page * limit < totalTags,
-//       },
-//     });
-//   } catch (error) {
-//     console.error('Meta Data Error:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Error fetching meta data',
-//       error: error.message,
-//     });
-//   }
-// };
-
 export const getCategoriesAndTags = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10;
     const page = parseInt(req.query.page) || 1;
+    const cacheKey = await buildVersionedCacheKey('meta:categories_tags', `p${page}:l${limit}`);
+    const cachedData = parseCachedJson(await getCache(cacheKey));
 
-    const cacheKey = `meta:categories_tags:p${page}:l${limit}`;
-
-    const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
-      // console.log("Serving Meta from Cache"); // for debugging
-      return res.status(200).json(JSON.parse(cachedData));
+      return res.status(200).json(cachedData);
     }
 
     const [categories, regions] = await Promise.all([
@@ -244,7 +219,7 @@ export const getCategoriesAndTags = async (req, res) => {
       },
     };
 
-    await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 3600 });
+    await setCache(cacheKey, responseData, 3600);
 
     res.status(200).json(responseData);
   } catch (error) {
@@ -273,8 +248,8 @@ export const createListing = async (req, res) => {
       description,
       externalUrls,
       websiteLink,
-      region, // এটি হয়তো আপনার লোকাল কোনো রিজিয়ন
-      country, // ফ্রন্টএন্ড থেকে আসা দেশের নাম
+      region,
+      country,
       tradition,
       category,
       culturalTags,
@@ -284,13 +259,11 @@ export const createListing = async (req, res) => {
       return res.status(400).json({ message: 'Please upload an image' });
     }
 
-    // --- মহাদেশ বের করার লজিক ---
     const continent = getContinentByCountry(country);
 
     const generatedSlug = `${slugify(title, { lower: true, strict: true })}-${Date.now()}`;
     const imageUrl = req.file.path;
 
-    // URL লিস্ট প্রসেসিং
     let urlList = [];
     if (externalUrls) {
       urlList = Array.isArray(externalUrls)
@@ -301,7 +274,6 @@ export const createListing = async (req, res) => {
             .filter((url) => url !== '');
     }
 
-    // ট্যাগ আইডি প্রসেসিং
     let tagIds = [];
     if (culturalTags) {
       tagIds = Array.isArray(culturalTags)
@@ -312,7 +284,6 @@ export const createListing = async (req, res) => {
             .filter((t) => t !== '');
     }
 
-    // নতুন লিস্টিং তৈরি (এখন continent ফিল্ডসহ)
     const newListing = await Listing.create({
       creatorId: req.user._id,
       slug: generatedSlug,
@@ -320,7 +291,7 @@ export const createListing = async (req, res) => {
       description,
       externalUrls: urlList,
       websiteLink,
-      continent, // এখানে অটোমেটিক মহাদেশ সেভ হচ্ছে
+      continent,
       region,
       country,
       tradition,
@@ -329,10 +300,15 @@ export const createListing = async (req, res) => {
       image: imageUrl,
     });
 
-    // ইউজারের লিস্টিং কাউন্ট আপডেট
     const actualCount = await Listing.countDocuments({ creatorId: req.user._id });
     await User.findByIdAndUpdate(req.user._id, {
       listingsCount: actualCount,
+    });
+
+    await invalidateListingCaches({
+      id: newListing._id,
+      slug: newListing.slug,
+      creatorId: req.user._id,
     });
 
     res.status(201).json({
@@ -344,75 +320,6 @@ export const createListing = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-
-// export const updateListing = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const listing = await Listing.findById(id);
-
-//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-//     if (listing.creatorId.toString() !== req.user._id.toString()) {
-//       return res.status(403).json({ message: 'Unauthorized to update' });
-//     }
-
-//     const updateData = { ...req.body };
-
-//     // 🔹 Tag Restriction (Max 5)
-//     let tags = [];
-//     if (updateData.culturalTags) {
-//       tags = Array.isArray(updateData.culturalTags)
-//         ? updateData.culturalTags
-//         : updateData.culturalTags
-//           .split(',')
-//           .map((t) => t.trim())
-//           .filter((t) => t !== '');
-
-//       if (tags.length > 5) {
-//         return res.status(400).json({ message: 'Maximum 5 cultural tags allowed' });
-//       }
-//       listing.culturalTags = tags;
-//     }
-
-//     if (listing.status !== 'approved' && listing.status !== 'blocked') {
-//       listing.status = 'pending';
-//       listing.rejectionReason = '';
-//     }
-
-//     // 🔹 Image Update
-//     if (req.file) {
-//       if (listing.image && !listing.image.startsWith('http')) {
-//         const oldImagePath = path.join(process.cwd(), listing.image);
-//         if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
-//       }
-//       listing.image = req.file.path;
-//     }
-
-//     // 🔹 Field Updates
-//     const fieldsToUpdate = [
-//       'title',
-//       'description',
-//       'region',
-//       'country',
-//       'tradition',
-//       'websiteLink',
-//       'category',
-//     ];
-//     fieldsToUpdate.forEach((field) => {
-//       if (updateData[field] !== undefined) listing[field] = updateData[field];
-//     });
-
-//     await listing.save();
-//     const finalListing = await Listing.findById(id).populate('category culturalTags');
-
-//     res.status(200).json({
-//       message: listing.status === 'approved' ? 'Update successful' : 'Submitted for re-review',
-//       updatedListing: finalListing,
-//     });
-//   } catch (error) {
-//     res.status(500).json({ message: error.message });
-//   }
-// };
 
 export const updateListing = async (req, res) => {
   try {
@@ -469,18 +376,11 @@ export const updateListing = async (req, res) => {
     });
 
     await listing.save();
-
-    const detailCacheKey = `listing:detail:${id}`;
-    const slugCacheKey = `listing:detail:${listing.slug}`;
-
-    const publicListingsKeys = await redisClient.keys('listings:public:*');
-    const metaKeys = await redisClient.keys('meta:categories_tags:*');
-
-    const keysToDelete = [detailCacheKey, slugCacheKey, ...publicListingsKeys, ...metaKeys];
-
-    if (keysToDelete.length > 0) {
-      await redisClient.del(keysToDelete);
-    }
+    await invalidateListingCaches({
+      id: listing._id,
+      slug: listing.slug,
+      creatorId: listing.creatorId,
+    });
 
     const finalListing = await Listing.findById(id).populate('category culturalTags');
 
@@ -494,276 +394,19 @@ export const updateListing = async (req, res) => {
   }
 };
 
-// export const getPublicListings = async (req, res) => {
-//   try {
-//     const {
-//       filter, search, category, continent, tradition,
-//       creatorId, limit, page, offset
-//     } = req.query;
-
-//     let query = { status: 'approved' };
-
-//     // ১. ক্যাটাগরি ফিল্টার (ID অথবা SEO Slug সাপোর্ট)
-//     if (category && category !== 'All' && category !== 'undefined') {
-//       if (mongoose.Types.ObjectId.isValid(category)) {
-//         query.category = category;
-//       } else {
-//         // 'pottery-art' কে 'pottery art' বানিয়ে কেস-ইনসেনসিটিভ সার্চ
-//         const categoryTitle = category.replace(/-/g, ' ');
-//         const foundCategory = await Category.findOne({
-//           title: { $regex: new RegExp(`^${categoryTitle}$`, 'i') },
-//         });
-
-//         if (foundCategory) {
-//           query.category = foundCategory._id;
-//         } else {
-//           // ক্যাটাগরি না পাওয়া গেলে একটি রেন্ডম আইডি বসানো যেন রেজাল্ট খালি আসে
-//           query.category = new mongoose.Types.ObjectId();
-//         }
-//       }
-//     }
-
-//     // ২. কন্টিনেন্ট (মহাদেশ) ফিল্টার - [পরিবর্তিত অংশ]
-//     // এখন আমরা সরাসরি ডাটাবেজের 'continent' ফিল্ডে সার্চ করবো
-//     if (continent && continent !== 'All' && continent !== 'All Regions' && continent !== 'undefined') {
-//       // যদি স্লাগ আকারে আসে (যেমন: asia-pacific) তবে স্পেস করে দেব
-//       const continentName = continent.replace(/-/g, ' ');
-//       // সরাসরি 'continent' ফিল্ডে কেস-ইনসেনসিটিভ সার্চ
-//       query.continent = { $regex: new RegExp(`^${continentName}$`, 'i') };
-//     }
-
-//     // ৩. ট্র্যাডিশন ফিল্টার
-//     if (tradition && tradition !== 'All') {
-//       query.tradition = { $regex: tradition, $options: 'i' };
-//     }
-
-//     // ৪. ডেট ফিল্টার (Today / This week)
-//     const now = new Date();
-//     if (filter === 'Today') {
-//       const startOfDay = new Date(now.setHours(0, 0, 0, 0));
-//       query.createdAt = { $gte: startOfDay };
-//     } else if (filter === 'This week') {
-//       const startOfWeek = new Date();
-//       startOfWeek.setDate(now.getDate() - 7);
-//       startOfWeek.setHours(0, 0, 0, 0);
-//       query.createdAt = { $gte: startOfWeek };
-//     }
-
-//     if (creatorId) query.creatorId = creatorId;
-
-//     // ৫. সার্চ লজিক - [এখানেও continent যোগ করা হয়েছে]
-//     if (search) {
-//       const searchRegex = { $regex: search, $options: 'i' };
-
-//       const [matchingTags, matchingCategories] = await Promise.all([
-//         Tag.find({ title: searchRegex }).distinct('_id'),
-//         Category.find({ title: searchRegex }).distinct('_id'),
-//       ]);
-
-//       query.$or = [
-//         { title: searchRegex },
-//         { description: searchRegex },
-//         { country: searchRegex },
-//         { continent: searchRegex },
-//         { culturalTags: { $in: matchingTags } },
-//         { category: { $in: matchingCategories } },
-//       ];
-//     }
-
-//     // ৬. পেজিনেশন ও স্কিপ লজিক
-//     const resPerPage = parseInt(limit) || 10;
-//   const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
-
-//   // ৭. লিস্টিং ফেচিং
-//   let listings = await Listing.find(query)
-//     .populate('creatorId', 'username profile listingsCount')
-//     .populate('category', 'title')
-//     .populate('culturalTags', 'title image')
-//     .sort({
-//       isPromoted: -1,
-//       'promotion.level': -1,
-//       views: -1,
-//       createdAt: -1,
-//     })
-//     .limit(resPerPage)
-//     .skip(skip)
-//     .lean();
-
-//   const totalListings = await Listing.countDocuments(query);
-//   const currentUserId = req.user ? req.user._id.toString() : null;
-
-//   // ৮. ডাটা ফরম্যাটিং ও এডিশনাল স্ট্যাটস
-//   const formattedListings = await Promise.all(
-//     listings.map(async (item) => {
-//       const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
-
-//       // ক্রিয়েটরের একটিভ লিস্টিং কাউন্ট করা
-//       const creatorActiveListings = await Listing.countDocuments({
-//         creatorId: item.creatorId?._id,
-//         status: 'approved',
-//       });
-
-//       const effectiveIsPromoted =
-//         (item.promotion?.boost?.isActive && !item.promotion?.boost?.isPaused) ||
-//         (item.promotion?.ppc?.isActive && !item.promotion?.ppc?.isPaused);
-
-//       return {
-//         ...item,
-//         isPromoted: effectiveIsPromoted,
-//         isFavorited: currentUserId
-//           ? safeFavorites.some((favId) => favId.toString() === currentUserId)
-//           : false,
-//         favoritesCount: safeFavorites.length,
-//         creatorStats: {
-//           totalApprovedListings: creatorActiveListings,
-//         },
-//       };
-//     })
-//   );
-
-//   // ৯. ফাইনাল রেসপন্স
-//   res.status(200).json({
-//     success: true,
-//     total: totalListings,
-//     count: formattedListings.length,
-//     currentPage: parseInt(page) || 1,
-//     nextOffset: skip + formattedListings.length,
-//     hasMore: skip + formattedListings.length < totalListings,
-//     listings: formattedListings,
-//   });
-
-// } catch (error) {
-//   console.error('Public Listings Error:', error);
-//   res.status(500).json({ success: false, message: 'Server Error' });
-// }
-// };
-
-// export const getListingById = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const { deviceId } = req.query;
-//     const userId = req.user?._id;
-//     const userAgent = req.headers['user-agent'] || 'unknown';
-
-//     const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
-
-//     // ২. লিস্টিং খোঁজা
-//     const listing = await Listing.findOne(query)
-//       .populate('creatorId', 'firstName lastName username profile.profileImage')
-//       .populate('category', 'title')
-//       .populate('culturalTags', 'title image');
-
-//     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
-
-//     const actualListingId = listing._id;
-
-//     const viewQuery = { listingId: actualListingId, type: 'view' };
-//     if (userId) {
-//       viewQuery.userId = userId;
-//     } else if (deviceId) {
-//       viewQuery.deviceId = deviceId;
-//     } else {
-//       viewQuery.userAgent = userAgent;
-//     }
-
-//     const alreadyViewed = await InteractionLog.findOne(viewQuery);
-
-//     if (!alreadyViewed) {
-//       await Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } });
-
-//       await InteractionLog.create({
-//         listingId: actualListingId,
-//         userId: userId || null,
-//         deviceId: deviceId || 'guest_device',
-//         type: 'view',
-//       });
-
-//       const today = new Date();
-//       today.setHours(0, 0, 0, 0);
-//       await Analytics.findOneAndUpdate(
-//         { listingId: actualListingId, date: today },
-//         {
-//           $inc: { views: 1 },
-//           $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
-//         },
-//         { upsert: true }
-//       );
-//     }
-
-//     res.status(200).json(listing);
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-
-// export const getListingById = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const { deviceId } = req.query;
-//     const userId = req.user?._id;
-//     const userAgent = req.headers['user-agent'] || 'unknown';
-
-//     const listing = await Listing.findById(id)
-//       .populate('creatorId', 'firstName lastName username profile.profileImage')
-//       .populate('category', 'title')
-//       .populate('culturalTags', 'title image');
-
-//     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
-
-//     const viewQuery = { listingId: id, type: 'view' };
-//     if (userId) {
-//       viewQuery.userId = userId;
-//     } else if (deviceId) {
-//       viewQuery.deviceId = deviceId;
-//     } else {
-//       viewQuery.userAgent = userAgent;
-//     }
-
-//     const alreadyViewed = await InteractionLog.findOne(viewQuery);
-
-//     if (!alreadyViewed) {
-//       await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } });
-
-//       await InteractionLog.create({
-//         listingId: id,
-//         userId: userId || null,
-//         deviceId: deviceId || 'guest_device',
-//         type: 'view',
-//       });
-
-//       const today = new Date();
-//       today.setHours(0, 0, 0, 0);
-//       await Analytics.findOneAndUpdate(
-//         { listingId: id, date: today },
-//         {
-//           $inc: { views: 1 },
-//           $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
-//         },
-//         { upsert: true }
-//       );
-//     }
-
-//     res.status(200).json(listing);
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-
 export const getPublicListings = async (req, res) => {
   try {
     const { filter, search, category, continent, tradition, creatorId, limit, page, offset } =
       req.query;
+    const currentUserId = req.user ? req.user._id.toString() : 'anonymous';
 
-    // ১. ডাইনামিক ক্যাশ কি (Key) তৈরি করা
-    // কুয়েরি প্যারামিটারগুলোর একটি ইউনিক হ্যাশ তৈরি করছি যাতে ফিল্টার অনুযায়ী আলাদা ক্যাশ থাকে
-    const queryStr = JSON.stringify(req.query);
+    const queryStr = JSON.stringify({ ...req.query, currentUserId });
     const hash = crypto.createHash('md5').update(queryStr).digest('hex');
-    const cacheKey = `listings:public:${hash}`;
+    const cacheKey = await buildVersionedCacheKey('listings:public', hash);
+    const cachedData = parseCachedJson(await getCache(cacheKey));
 
-    // ২. প্রথমে Redis চেক করা
-    const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
-      return res.status(200).json(JSON.parse(cachedData));
+      return res.status(200).json(cachedData);
     }
 
     let query = { status: 'approved' };
@@ -845,7 +488,6 @@ export const getPublicListings = async (req, res) => {
       .lean();
 
     const totalListings = await Listing.countDocuments(query);
-    const currentUserId = req.user ? req.user._id.toString() : null;
 
     // ৯. ডাটা ফরম্যাটিং
     const formattedListings = await Promise.all(
@@ -865,7 +507,7 @@ export const getPublicListings = async (req, res) => {
         return {
           ...item,
           isPromoted: effectiveIsPromoted,
-          isFavorited: currentUserId
+          isFavorited: currentUserId !== 'anonymous'
             ? safeFavorites.some((f) => f.toString() === currentUserId)
             : false,
           favoritesCount: safeFavorites.length,
@@ -884,8 +526,7 @@ export const getPublicListings = async (req, res) => {
       listings: formattedListings,
     };
 
-    // ১০. Redis-এ ক্যাশ করা (৫ থেকে ১৫ মিনিটের জন্য রাখা ভালো কারণ এটি বারবার বদলায়)
-    await redisClient.set(cacheKey, JSON.stringify(responseData), { EX: 600 });
+    await setCache(cacheKey, responseData, 600);
 
     res.status(200).json(responseData);
   } catch (error) {
@@ -901,13 +542,12 @@ export const getListingById = async (req, res) => {
     const userId = req.user?._id;
     const userAgent = req.headers['user-agent'] || 'unknown';
 
-    const cacheKey = `listing:detail:${id}`;
-
-    const cachedListing = await redisClient.get(cacheKey);
+    const cacheKey = `listing:detail:${id.toLowerCase()}`;
+    const cachedListing = parseCachedJson(await getCache(cacheKey));
     let listing;
 
     if (cachedListing) {
-      listing = JSON.parse(cachedListing);
+      listing = cachedListing;
     } else {
       const query = mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { slug: id };
       listing = await Listing.findOne(query)
@@ -918,7 +558,13 @@ export const getListingById = async (req, res) => {
 
       if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
-      await redisClient.set(cacheKey, JSON.stringify(listing), { EX: 1800 });
+      await Promise.all([
+        setCache(cacheKey, listing, 1800),
+        setCache(`listing:detail:${listing._id.toString().toLowerCase()}`, listing, 1800),
+        listing.slug
+          ? setCache(`listing:detail:${listing.slug.toLowerCase()}`, listing, 1800)
+          : null,
+      ]);
     }
 
     const handleViewLog = async () => {
@@ -1047,15 +693,17 @@ export const getMyListings = async (req, res) => {
 export const toggleFavorite = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user?._id; // মিডলওয়্যার থেকে ইউজার আইডি
+    const userId = req.user?._id; 
 
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
+    ensureListingFavoriteState(listing);
+
     // ১. ফেভারিট অ্যাড বা রিমুভ করা
-    const isFavorited = listing.favorites.includes(userId);
+    const isFavorited = listing.favorites.some((favoriteId) => favoriteId?.equals?.(userId));
 
     if (isFavorited) {
       listing.favorites.pull(userId);
@@ -1068,6 +716,11 @@ export const toggleFavorite = async (req, res) => {
     applyPromotionLogic(listing);
 
     await listing.save();
+    await invalidateListingCaches({
+      id: listing._id,
+      slug: listing.slug,
+      creatorId: listing.creatorId,
+    });
 
     // ৩. রেসপন্স পাঠানো
     res.status(200).json({
@@ -1187,6 +840,12 @@ export const deleteListing = async (req, res) => {
       listingsCount: remainingCount,
     });
 
+    await invalidateListingCaches({
+      id: listing._id,
+      slug: listing.slug,
+      creatorId: listing.creatorId,
+    });
+
     res.status(200).json({ message: 'Listing deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1253,6 +912,12 @@ export const cancelPromotion = async (req, res) => {
 
     await dbSession.commitTransaction();
     dbSession.endSession();
+
+    await invalidateListingCaches({
+      id: listing._id,
+      slug: listing.slug,
+      creatorId: listing.creatorId,
+    });
 
     res.status(200).json({
       success: true,

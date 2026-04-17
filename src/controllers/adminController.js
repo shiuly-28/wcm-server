@@ -11,6 +11,11 @@ import { SystemSettings } from '../models/SystemSettings.js';
 import AuditLog from '../models/AuditLog.js';
 import mongoose from 'mongoose';
 import Visitor from '../models/Visitor.js';
+import {
+  invalidateListingCaches,
+  invalidateMetaCaches,
+  invalidateUserProfileCaches,
+} from '../utils/cache.js';
 
 export const createTag = async (req, res) => {
   try {
@@ -25,6 +30,8 @@ export const createTag = async (req, res) => {
       category: categoryId,
     });
 
+    await invalidateMetaCaches();
+
     res.status(201).json(newTag);
   } catch (error) {
     if (error.code === 11000) {
@@ -34,7 +41,6 @@ export const createTag = async (req, res) => {
   }
 };
 
-// new
 export const getAllCategories = async (req, res) => {
   try {
     const categories = await Category.find().sort({ order: 1 });
@@ -44,7 +50,6 @@ export const getAllCategories = async (req, res) => {
   }
 };
 
-// new
 export const getTagsByCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
@@ -62,6 +67,7 @@ export const createCategory = async (req, res) => {
       title: req.body.title,
       order: count,
     });
+    await invalidateMetaCaches();
     res.status(201).json(category);
   } catch (error) {
     if (error.code === 11000) {
@@ -81,6 +87,7 @@ export const updateCategory = async (req, res) => {
       { new: true, runValidators: true }
     );
     if (!updatedCategory) return res.status(404).json({ message: 'Category not found' });
+    await invalidateMetaCaches();
     res.status(200).json(updatedCategory);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -92,6 +99,7 @@ export const deleteCategory = async (req, res) => {
     const { id } = req.params;
     const category = await Category.findByIdAndDelete(id);
     if (!category) return res.status(404).json({ message: 'Category not found' });
+    await invalidateMetaCaches();
     res.status(200).json({ message: 'Category deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -113,6 +121,7 @@ export const updateTag = async (req, res) => {
       { new: true, runValidators: true }
     );
 
+    await invalidateMetaCaches();
     res.status(200).json(updatedTag);
   } catch (error) {
     console.error('Update Tag Error:', error);
@@ -141,6 +150,7 @@ export const deleteTag = async (req, res) => {
     }
 
     await Tag.findByIdAndDelete(id);
+    await invalidateMetaCaches();
     res.status(200).json({ message: 'Tag and image deleted successfully' });
   } catch (error) {
     console.error('Delete operation failed:', error);
@@ -302,46 +312,16 @@ export const approveCreator = async (req, res) => {
     ).select('-password');
 
     if (!user) return res.status(404).json({ message: 'User not found' });
+    await invalidateUserProfileCaches({
+      id: user._id,
+      username: user.username,
+      slug: user.slug,
+    });
     res.status(200).json({ message: 'User is now a Creator', user });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
-
-// export const rejectCreator = async (req, res) => {
-//   try {
-//     const { userId } = req.params;
-//     const { reason, statusType } = req.body;
-
-//     const user = await User.findByIdAndUpdate(
-//       userId,
-//       {
-//         $set: {
-//           'creatorRequest.isApplied': false,
-
-//           'creatorRequest.status': statusType || 'rejected',
-
-//           'creatorRequest.rejectionReason': reason || 'No specific reason provided.',
-
-//           'creatorRequest.adminComment':
-//             statusType === 'needs_review'
-//               ? 'Action required: Please update your profile as requested.'
-//               : 'Final Decision: Application Rejected.',
-//         },
-//       },
-//       { new: true }
-//     ).select('-password');
-
-//     if (!user) return res.status(404).json({ message: 'User not found' });
-
-//     res.status(200).json({
-//       message: `Creator request processed as ${statusType}`,
-//       user,
-//     });
-//   } catch (error) {
-//     res.status(500).json({ message: error.message });
-//   }
-// };
 
 export const rejectCreator = async (req, res) => {
   try {
@@ -376,6 +356,11 @@ export const rejectCreator = async (req, res) => {
     ).select('-password');
 
     if (!user) return res.status(404).json({ success: false, message: 'Node not found.' });
+    await invalidateUserProfileCaches({
+      id: user._id,
+      username: user.username,
+      slug: user.slug,
+    });
 
     res.status(200).json({
       success: true,
@@ -405,6 +390,11 @@ export const toggleUserStatus = async (req, res) => {
 
     user.status = newStatus;
     await user.save();
+    await invalidateUserProfileCaches({
+      id: user._id,
+      username: user.username,
+      slug: user.slug,
+    });
 
     res.status(200).json({
       success: true,
@@ -465,7 +455,14 @@ export const manageListings = async (req, res) => {
 export const deleteListingByAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-    await Listing.findByIdAndDelete(id);
+    const listing = await Listing.findByIdAndDelete(id).select('_id slug creatorId');
+    if (listing) {
+      await invalidateListingCaches({
+        id: listing._id,
+        slug: listing.slug,
+        creatorId: listing.creatorId,
+      });
+    }
     res.status(200).json({ message: 'Listing removed by admin' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -514,6 +511,11 @@ export const updateListingStatus = async (req, res) => {
     }
 
     await listing.save();
+    await invalidateListingCaches({
+      id: listing._id,
+      slug: listing.slug,
+      creatorId: listing.creatorId,
+    });
 
     res.status(200).json({
       success: true,
@@ -534,6 +536,7 @@ export const updateCategoryOrder = async (req, res) => {
     });
 
     await Promise.all(updatePromises);
+    await invalidateMetaCaches();
 
     res.status(200).json({ message: 'Order updated successfully' });
   } catch (error) {
@@ -685,110 +688,6 @@ export const exportTransactionsExcel = async (req, res) => {
   }
 };
 
-// export const getAllTransactions = async (req, res) => {
-//   try {
-//     const {
-//       page = 1,
-//       limit = 10,
-//       search = '',
-//       filter = 'all', // all, today, month, year
-//     } = req.query;
-
-//     let query = { status: 'completed' };
-
-//     // --- ১. ডেট ফিল্টারিং লজিক ---
-//     const now = new Date();
-//     if (filter === 'today') {
-//       const startOfToday = new Date(now.setHours(0, 0, 0, 0));
-//       query.createdAt = { $gte: startOfToday };
-//     } else if (filter === 'month') {
-//       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-//       query.createdAt = { $gte: startOfMonth };
-//     } else if (filter === 'year') {
-//       const startOfYear = new Date(now.getFullYear(), 0, 1);
-//       query.createdAt = { $gte: startOfYear };
-//     }
-
-//     // --- ২. গ্লোবাল সার্চ লজিক ---
-//     if (search) {
-//       // ইউজারের নাম বা ইমেইল দিয়ে সার্চ করার জন্য প্রথমে ইউজারদের খুঁজে বের করা
-//       const users = await User.find({
-//         $or: [
-//           { firstName: { $regex: search, $options: 'i' } },
-//           { lastName: { $regex: search, $options: 'i' } },
-//           { email: { $regex: search, $options: 'i' } },
-//           { username: { $regex: search, $options: 'i' } },
-//         ],
-//       }).select('_id');
-
-//       const userIds = users.map((u) => u._id);
-
-//       // ট্রানজেকশন টেবিলে সার্চ (Invoice, Package Type বা User ID দিয়ে)
-//       query.$or = [
-//         { invoiceNumber: { $regex: search, $options: 'i' } },
-//         { packageType: { $regex: search, $options: 'i' } },
-//         { stripeSessionId: { $regex: search, $options: 'i' } },
-//         { creator: { $in: userIds } },
-//       ];
-//     }
-
-//     const transactions = await Transaction.find(query)
-//       .populate('creator', 'firstName lastName email username')
-//       .populate('listing', 'title')
-//       .sort({ createdAt: -1 })
-//       .limit(limit * 1)
-//       .skip((page - 1) * limit)
-//       .lean();
-
-//     const count = await Transaction.countDocuments(query);
-
-//     // --- ৩. ডাটা ফরম্যাটিং ---
-//     const formattedTransactions = transactions.map((tx) => {
-//       const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
-
-//       return {
-//         _id: tx._id,
-//         userId: tx.creator?._id || 'N/A',
-//         creatorName: tx.creator ? `${tx.creator.firstName} ${tx.creator.lastName}` : 'Unknown',
-//         creatorEmail: tx.creator?.email,
-//         listingId: tx.listing?._id || 'N/A',
-//         listingTitle: tx.listing?.title || 'Deleted Listing',
-//         type: tx.packageType,
-//         amount: tx.amountPaid,
-//         currency: (tx.currency || 'EUR').toUpperCase(),
-//         netAmount: Number(netAmount.toFixed(2)),
-//         vatAmount: tx.vatAmount || 0,
-//         fxRate: tx.fxRate || 1,
-//         amountInEUR: tx.amountInEUR || 0,
-//         invoiceNumber: tx.invoiceNumber || 'N/A',
-//         stripeId: tx.stripeSessionId,
-//         createdAt: tx.createdAt,
-//       };
-//     });
-
-//     // সামারি স্ট্যাট (ঐচ্ছিক কিন্তু অ্যাডমিনের জন্য দরকারি)
-//     const totalRevenue = formattedTransactions.reduce((acc, curr) => acc + curr.amountInEUR, 0);
-
-//     res.status(200).json({
-//       success: true,
-//       transactions: formattedTransactions,
-//       pagination: {
-//         totalCount: count,
-//         totalPages: Math.ceil(count / limit),
-//         currentPage: Number(page),
-//       },
-//       stats: {
-//         totalEURInPage: Number(totalRevenue.toFixed(2)),
-//       },
-//     });
-//   } catch (error) {
-//     console.error('GetAllTransactions Error:', error);
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-
-// --- ১. নির্দিষ্ট ইউজার ফিল্টারসহ সব ট্রানজ্যাকশন দেখা ---
-
 export const getAllTransactions = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', filter = 'all', userId } = req.query;
@@ -933,6 +832,11 @@ export const updatePpcBalanceManual = async (req, res) => {
     listing.isPromoted = true;
 
     await listing.save();
+    await invalidateListingCaches({
+      id: listing._id,
+      slug: listing.slug,
+      creatorId: listing.creatorId,
+    });
 
     res.status(200).json({
       success: true,
