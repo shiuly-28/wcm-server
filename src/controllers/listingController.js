@@ -269,9 +269,9 @@ export const createListing = async (req, res) => {
       urlList = Array.isArray(externalUrls)
         ? externalUrls
         : externalUrls
-            .split(',')
-            .map((url) => url.trim())
-            .filter((url) => url !== '');
+          .split(',')
+          .map((url) => url.trim())
+          .filter((url) => url !== '');
     }
 
     let tagIds = [];
@@ -279,9 +279,9 @@ export const createListing = async (req, res) => {
       tagIds = Array.isArray(culturalTags)
         ? culturalTags
         : culturalTags
-            .split(',')
-            .map((t) => t.trim())
-            .filter((t) => t !== '');
+          .split(',')
+          .map((t) => t.trim())
+          .filter((t) => t !== '');
     }
 
     const newListing = await Listing.create({
@@ -339,9 +339,9 @@ export const updateListing = async (req, res) => {
       tags = Array.isArray(updateData.culturalTags)
         ? updateData.culturalTags
         : updateData.culturalTags
-            .split(',')
-            .map((t) => t.trim())
-            .filter((t) => t !== '');
+          .split(',')
+          .map((t) => t.trim())
+          .filter((t) => t !== '');
 
       if (tags.length > 5) {
         return res.status(400).json({ message: 'Maximum 5 cultural tags allowed' });
@@ -428,15 +428,16 @@ export const getPublicListings = async (req, res) => {
       }
     }
 
-    // ৪. মহাদেশ (Continent) ফিল্টার
+    // ৪. মহাদেশ (Continent) ফিল্টার (Updated)
     if (
       continent &&
       continent !== 'All' &&
       continent !== 'All Regions' &&
       continent !== 'undefined'
     ) {
-      const continentName = continent.replace(/-/g, ' ');
-      query.continent = { $regex: new RegExp(`^${continentName}$`, 'i') };
+      const continentSlug = continent.toLowerCase().trim();
+
+      query.continent = { $regex: new RegExp(`^${continentSlug}$`, 'i') };
     }
 
     // ৫. ট্র্যাডিশন ফিল্টার
@@ -700,7 +701,7 @@ export const getMyListings = async (req, res) => {
 export const toggleFavorite = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user?._id; 
+    const userId = req.user?._id;
 
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
