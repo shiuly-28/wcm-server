@@ -15,10 +15,12 @@ import {
   parseCachedJson,
   setCache,
 } from '../utils/cache.js';
+import dns from 'dns/promises';
 
 export const registerUser = async (req, res) => {
   try {
     const { firstName, lastName, username, email, password } = req.body;
+
     const userExists = await User.findOne({ $or: [{ email }, { username }] });
     if (userExists) return res.status(400).json({ message: 'User already exists' });
 
@@ -28,6 +30,11 @@ export const registerUser = async (req, res) => {
       crypto.randomBytes(4).toString('hex');
 
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Email verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpire = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
     const newUser = await User.create({
       slug,
       firstName,
@@ -36,8 +43,65 @@ export const registerUser = async (req, res) => {
       email,
       password: hashedPassword,
       profile: {},
+      isEmailVerified: false,
+      emailVerificationToken: verificationToken,
+      emailVerificationExpire: verificationExpire,
     });
-    res.status(201).json({ message: 'User registered successfully' });
+
+    // Send verification email
+    const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"World Culture Marketplace" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: 'Verify your email address',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto;">
+          <h2>Welcome, ${firstName}!</h2>
+          <p>Please verify your email address by clicking the button below. This link expires in <strong>24 hours</strong>.</p>
+          <a href="${verifyUrl}" style="display:inline-block; padding:12px 24px; background:#F57C00; color:#fff; border-radius:8px; text-decoration:none; font-weight:bold;">
+            Verify Email
+          </a>
+          <p style="margin-top:16px; color:#888; font-size:12px;">If you didn't register, ignore this email.</p>
+        </div>
+      `,
+    });
+
+    res.status(201).json({
+      message: 'Registration successful! Please check your email to verify your account.',
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const verifyEmail = async (req, res) => {
+  try {
+    const { token } = req.query;
+
+    const user = await User.findOne({
+      emailVerificationToken: token,
+      emailVerificationExpire: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired verification link.' });
+    }
+
+    user.isEmailVerified = true;
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpire = undefined;
+    await user.save();
+
+    res.status(200).json({ message: 'Email verified successfully! You can now log in.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -51,6 +115,10 @@ export const loginUser = async (req, res) => {
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if (!user.isEmailVerified) {
+      return res.status(403).json({ message: 'Please verify your email before logging in.' });
     }
 
     if (user.status === 'blocked') {

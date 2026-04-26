@@ -567,42 +567,49 @@ export const getListingById = async (req, res) => {
       ]);
     }
 
-    const handleViewLog = async () => {
-      try {
-        const actualListingId = listing._id;
-        const viewQuery = { listingId: actualListingId, type: 'view' };
+   const handleViewLog = async () => {
+     try {
+       const actualListingId = listing._id.toString();
+       const viewQuery = { listingId: actualListingId, type: 'view' };
 
-        if (userId) viewQuery.userId = userId;
-        else if (deviceId) viewQuery.deviceId = deviceId;
-        else viewQuery.userAgent = userAgent;
+       if (userId) {
+         viewQuery.userId = userId;
+       } else if (deviceId && deviceId !== 'undefined') {
+         viewQuery.deviceId = deviceId;
+       } else {
+         viewQuery.deviceId = userAgent;
+       }
 
-        const alreadyViewed = await InteractionLog.findOne(viewQuery).select('_id').lean();
+       const alreadyViewed = await InteractionLog.findOne(viewQuery).select('_id').lean();
 
-        if (!alreadyViewed) {
-          const today = new Date().setHours(0, 0, 0, 0);
-          await Promise.all([
-            Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } }),
-            InteractionLog.create({
-              listingId: actualListingId,
-              userId: userId || null,
-              deviceId: deviceId || 'guest_device',
-              type: 'view',
-              userAgent,
-            }),
-            Analytics.findOneAndUpdate(
-              { listingId: actualListingId, date: today },
-              {
-                $inc: { views: 1 },
-                $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
-              },
-              { upsert: true }
-            ),
-          ]);
-        }
-      } catch (err) {
-        console.error('View Logging Error:', err);
-      }
-    };
+       if (!alreadyViewed) {
+         const today = new Date().setHours(0, 0, 0, 0);
+
+         const creatorId = listing.creatorId?._id || listing.creatorId;
+
+         await Promise.all([
+           Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } }),
+           InteractionLog.create({
+             listingId: actualListingId,
+             userId: userId || null,
+             deviceId: viewQuery.deviceId || 'guest_device',
+             type: 'view',
+             userAgent,
+           }),
+           Analytics.findOneAndUpdate(
+             { listingId: actualListingId, date: today },
+             {
+               $inc: { views: 1 },
+               $setOnInsert: { creatorId: creatorId },
+             },
+             { upsert: true }
+           ),
+         ]);
+       }
+     } catch (err) {
+       console.error('View Logging Error:', err);
+     }
+   };
 
     handleViewLog();
 

@@ -15,11 +15,13 @@ import {
   getModerationReasons,
   resetPassword,
   forgotPassword,
+  verifyEmail,
 } from '../controllers/userController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 
 const router = express.Router();
 
+router.get('/verify-email', verifyEmail);
 router.post('/register', registerUser);
 router.post('/login', loginUser);
 router.post('/logout', logoutUser);
