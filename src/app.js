@@ -15,6 +15,7 @@ import blogRoutes from './routes/blogRoutes.js';
 import viewsRoutes from './routes/viewsRoutes.js';
 import faqRoutes from './routes/faqRoutes.js';
 import seoRoutes from './routes/seoRoutes.js';
+import footerRoutes from './routes/footerRoutes.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -50,6 +51,7 @@ app.use('/api/blogs', blogRoutes);
 app.use('/api/views', viewsRoutes);
 app.use('/api/faqs', faqRoutes);
 app.use('/api/seo', seoRoutes);
+app.use('/api/footer', footerRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
