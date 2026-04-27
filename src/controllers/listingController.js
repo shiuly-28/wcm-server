@@ -1440,6 +1440,17 @@ export const getPublicListings = async (req, res) => {
       .skip(skip)
       .lean();
 
+    // ২. প্রতিটি ক্রিয়েটরের জন্য লিস্টিং কাউন্ট বের করা 
+    listings = await Promise.all(
+      listings.map(async (item) => {
+        if (item.creatorId) {
+          const count = await Listing.countDocuments({ creatorId: item.creatorId._id });
+          item.creatorId.listingsCount = count;
+        }
+        return item;
+      })
+    );
+
     const totalListings = await Listing.countDocuments(query);
 
     const formattedListings = await Promise.all(
@@ -1476,10 +1487,80 @@ export const getPublicListings = async (req, res) => {
       nextOffset: skip + formattedListings.length,
       hasMore: skip + formattedListings.length < totalListings,
       listings: formattedListings,
-    };
+    });
+  } catch (error) {
+    console.error('Public Listings Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error', details: error.message });
+  }
+};
 
+<<<<<<< HEAD
     await setCache(cacheKey, responseData, 600);
     res.status(200).json(responseData);
+=======
+export const handlePpcClick = async (req, res) => {
+  try {
+    const listingId = req.params.id;
+    const userIP =
+      req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+    const cacheKey = `ppc_${userIP}_${listingId}`;
+    const now = Date.now();
+
+    if (clickCooldowns.has(cacheKey)) {
+      const lastClick = clickCooldowns.get(cacheKey);
+      if (now - lastClick < 60000) {
+        const simpleListing = await Listing.findById(listingId).select('websiteLink');
+        return res
+          .status(200)
+          .json({ success: true, redirectUrl: simpleListing?.websiteLink || '/' });
+      }
+    }
+
+    clickCooldowns.set(cacheKey, now);
+
+    const listing = await Listing.findById(listingId);
+    if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+    const cost = listing.promotion?.ppc?.costPerClick || 0.1;
+    let wasCharged = false;
+
+    if (
+      listing.isPromoted &&
+      listing.promotion?.ppc?.isActive &&
+      listing.promotion?.ppc?.ppcBalance >= cost
+    ) {
+      const newBalance = Number((listing.promotion.ppc.ppcBalance - cost).toFixed(2));
+      const shouldDeactivate = newBalance < cost;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      await Promise.all([
+        Listing.findByIdAndUpdate(listingId, {
+          $set: {
+            'promotion.ppc.ppcBalance': newBalance,
+            'promotion.ppc.isActive': !shouldDeactivate,
+            isPromoted: listing.promotion.boost.isActive || !shouldDeactivate,
+          },
+          $inc: { 'promotion.ppc.totalClicks': 1 },
+        }),
+        Analytics.findOneAndUpdate(
+          { listingId: listing._id, creatorId: listing.creatorId, date: today },
+          { $inc: { clicks: 1 } },
+          { upsert: true, returnDocument: 'after' }
+        ),
+      ]);
+
+      wasCharged = true;
+    }
+
+    setTimeout(() => clickCooldowns.delete(cacheKey), 300000);
+
+    res.status(200).json({
+      success: true,
+      redirectUrl: listing.websiteLink || '/',
+      charged: wasCharged,
+    });
+>>>>>>> 4cf517fdbbfd86ad4f73a29c1dfdf4101dbb9f1e
   } catch (error) {
     console.error('Public Listings Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
