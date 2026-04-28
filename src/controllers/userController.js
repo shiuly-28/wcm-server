@@ -21,34 +21,47 @@ export const registerUser = async (req, res) => {
   try {
     const { firstName, lastName, username, email, password } = req.body;
 
-    const userExists = await User.findOne({ $or: [{ email }, { username }] });
-    if (userExists) return res.status(400).json({ message: 'User already exists' });
+    // ১. চেক করা ইউজার আগে থেকেই আছে কি না
+    let user = await User.findOne({ $or: [{ email }, { username }] });
 
-    const slug =
-      slugify(`${firstName} ${lastName}`, { lower: true, strict: true }) +
-      '-' +
-      crypto.randomBytes(4).toString('hex');
+    // যদি ইউজার থাকে এবং সে অলরেডি ভেরিফাইড হয়
+    if (user && user.isEmailVerified) {
+      return res.status(400).json({ message: 'User already exists and is verified.' });
+    }
 
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpire = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Email verification token
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationExpire = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    if (user && !user.isEmailVerified) {
+      user.firstName = firstName;
+      user.lastName = lastName;
+      user.username = username;
+      user.password = hashedPassword;
+      user.emailVerificationToken = verificationToken;
+      user.emailVerificationExpire = verificationExpire;
+      await user.save();
+    } else {
+      const slug =
+        slugify(`${firstName} ${lastName}`, { lower: true, strict: true }) +
+        '-' +
+        crypto.randomBytes(4).toString('hex');
 
-    const newUser = await User.create({
-      slug,
-      firstName,
-      lastName,
-      username,
-      email,
-      password: hashedPassword,
-      profile: {},
-      isEmailVerified: false,
-      emailVerificationToken: verificationToken,
-      emailVerificationExpire: verificationExpire,
-    });
+      user = await User.create({
+        slug,
+        firstName,
+        lastName,
+        username,
+        email,
+        password: hashedPassword,
+        profile: {},
+        isEmailVerified: false,
+        emailVerificationToken: verificationToken,
+        emailVerificationExpire: verificationExpire,
+      });
+    }
 
-    // Send verification email
+    // ৪. ভেরিফিকেশন ইমেইল পাঠানো
     const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
     const transporter = nodemailer.createTransport({
@@ -64,19 +77,21 @@ export const registerUser = async (req, res) => {
       to: email,
       subject: 'Verify your email address',
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto;">
-          <h2>Welcome, ${firstName}!</h2>
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 15px;">
+          <h2 style="color: #333;">Welcome, ${firstName}!</h2>
           <p>Please verify your email address by clicking the button below. This link expires in <strong>24 hours</strong>.</p>
-          <a href="${verifyUrl}" style="display:inline-block; padding:12px 24px; background:#F57C00; color:#fff; border-radius:8px; text-decoration:none; font-weight:bold;">
-            Verify Email
-          </a>
-          <p style="margin-top:16px; color:#888; font-size:12px;">If you didn't register, ignore this email.</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${verifyUrl}" style="display:inline-block; padding:14px 30px; background:#F57C00; color:#fff; border-radius:10px; text-decoration:none; font-weight:bold;">
+              Verify Email
+            </a>
+          </div>
+          <p style="color:#888; font-size:12px;">If you didn't register, please ignore this email.</p>
         </div>
       `,
     });
 
     res.status(201).json({
-      message: 'Registration successful! Please check your email to verify your account.',
+      message: 'Registration link sent! Please check your email to verify your account.',
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
