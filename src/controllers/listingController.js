@@ -269,9 +269,9 @@ export const createListing = async (req, res) => {
       urlList = Array.isArray(externalUrls)
         ? externalUrls
         : externalUrls
-          .split(',')
-          .map((url) => url.trim())
-          .filter((url) => url !== '');
+            .split(',')
+            .map((url) => url.trim())
+            .filter((url) => url !== '');
     }
 
     let tagIds = [];
@@ -279,9 +279,9 @@ export const createListing = async (req, res) => {
       tagIds = Array.isArray(culturalTags)
         ? culturalTags
         : culturalTags
-          .split(',')
-          .map((t) => t.trim())
-          .filter((t) => t !== '');
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
     }
 
     const newListing = await Listing.create({
@@ -339,9 +339,9 @@ export const updateListing = async (req, res) => {
       tags = Array.isArray(updateData.culturalTags)
         ? updateData.culturalTags
         : updateData.culturalTags
-          .split(',')
-          .map((t) => t.trim())
-          .filter((t) => t !== '');
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
 
       if (tags.length > 5) {
         return res.status(400).json({ message: 'Maximum 5 cultural tags allowed' });
@@ -411,7 +411,6 @@ export const getPublicListings = async (req, res) => {
 
     let query = { status: 'approved' };
 
-    // ৩. ক্যাটাগরি ফিল্টার
     if (category && category !== 'All' && category !== 'undefined') {
       if (mongoose.Types.ObjectId.isValid(category)) {
         query.category = category;
@@ -428,7 +427,6 @@ export const getPublicListings = async (req, res) => {
       }
     }
 
-    // ৪. মহাদেশ (Continent) ফিল্টার (Updated)
     if (
       continent &&
       continent !== 'All' &&
@@ -436,16 +434,13 @@ export const getPublicListings = async (req, res) => {
       continent !== 'undefined'
     ) {
       const continentSlug = continent.toLowerCase().trim();
-
       query.continent = { $regex: new RegExp(`^${continentSlug}$`, 'i') };
     }
 
-    // ৫. ট্র্যাডিশন ফিল্টার
     if (tradition && tradition !== 'All') {
       query.tradition = { $regex: tradition, $options: 'i' };
     }
 
-    // ৬. ডেট ফিল্টার
     const now = new Date();
     if (filter === 'Today') {
       query.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
@@ -457,7 +452,6 @@ export const getPublicListings = async (req, res) => {
 
     if (creatorId) query.creatorId = creatorId;
 
-    // ৭. সার্চ লজিক
     if (search) {
       const searchRegex = { $regex: search, $options: 'i' };
       const [matchingTags, matchingCategories] = await Promise.all([
@@ -475,7 +469,6 @@ export const getPublicListings = async (req, res) => {
       ];
     }
 
-    // ৮. পেজিনেশন ও ফেচিং (Lean ও Populate Optimization)
     const resPerPage = parseInt(limit) || 10;
     const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
 
@@ -490,12 +483,10 @@ export const getPublicListings = async (req, res) => {
 
     const totalListings = await Listing.countDocuments(query);
 
-    // ৯. ডাটা ফরম্যাটিং
     const formattedListings = await Promise.all(
       listings.map(async (item) => {
         const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
 
-        // কাউন্টিং লজিক অপ্টিমাইজড (সরাসরি পপুলেটেড ডাটা থেকে বা শর্ট কুয়েরি)
         const creatorActiveListings = await Listing.countDocuments({
           creatorId: item.creatorId?._id,
           status: 'approved',
@@ -508,9 +499,10 @@ export const getPublicListings = async (req, res) => {
         return {
           ...item,
           isPromoted: effectiveIsPromoted,
-          isFavorited: currentUserId !== 'anonymous'
-            ? safeFavorites.some((f) => f.toString() === currentUserId)
-            : false,
+          isFavorited:
+            currentUserId !== 'anonymous'
+              ? safeFavorites.some((f) => f.toString() === currentUserId)
+              : false,
           favoritesCount: safeFavorites.length,
           creatorStats: { totalApprovedListings: creatorActiveListings },
         };
@@ -528,7 +520,6 @@ export const getPublicListings = async (req, res) => {
     };
 
     await setCache(cacheKey, responseData, 600);
-
     res.status(200).json(responseData);
   } catch (error) {
     console.error('Public Listings Error:', error);
@@ -570,23 +561,29 @@ export const getListingById = async (req, res) => {
 
     const handleViewLog = async () => {
       try {
-        const actualListingId = listing._id;
+        const actualListingId = listing._id.toString();
         const viewQuery = { listingId: actualListingId, type: 'view' };
 
-        if (userId) viewQuery.userId = userId;
-        else if (deviceId) viewQuery.deviceId = deviceId;
-        else viewQuery.userAgent = userAgent;
+        if (userId) {
+          viewQuery.userId = userId;
+        } else if (deviceId && deviceId !== 'undefined') {
+          viewQuery.deviceId = deviceId;
+        } else {
+          viewQuery.deviceId = userAgent;
+        }
 
         const alreadyViewed = await InteractionLog.findOne(viewQuery).select('_id').lean();
 
         if (!alreadyViewed) {
           const today = new Date().setHours(0, 0, 0, 0);
+          const creatorId = listing.creatorId?._id || listing.creatorId;
+
           await Promise.all([
             Listing.findByIdAndUpdate(actualListingId, { $inc: { views: 1 } }),
             InteractionLog.create({
               listingId: actualListingId,
               userId: userId || null,
-              deviceId: deviceId || 'guest_device',
+              deviceId: viewQuery.deviceId || 'guest_device',
               type: 'view',
               userAgent,
             }),
@@ -594,7 +591,7 @@ export const getListingById = async (req, res) => {
               { listingId: actualListingId, date: today },
               {
                 $inc: { views: 1 },
-                $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+                $setOnInsert: { creatorId: creatorId },
               },
               { upsert: true }
             ),
@@ -606,7 +603,6 @@ export const getListingById = async (req, res) => {
     };
 
     handleViewLog();
-
     res.status(200).json(listing);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -632,12 +628,10 @@ export const getMyListings = async (req, res) => {
     }
 
     const currentUserId = req.user._id.toString();
-    const { filter } = req.query; // query parameter থেকে ফিল্টার নিচ্ছি
+    const { filter } = req.query;
 
-    // ১. বেসিক কুয়েরি (শুধুমাত্র নিজের লিস্টিং)
     let query = { creatorId: currentUserId };
 
-    // ২. টাইম ফিল্টারিং লজিক
     const now = new Date();
     if (filter === 'today') {
       const startOfDay = new Date(now.setHours(0, 0, 0, 0));
@@ -650,18 +644,14 @@ export const getMyListings = async (req, res) => {
       query.createdAt = { $gte: startOfYear };
     }
 
-    // ৩. ডাটাবেস থেকে ডাটা আনা
     const listings = await Listing.find(query)
       .populate('category', 'title')
       .populate('culturalTags', 'title image')
       .sort({ createdAt: -1 })
       .lean();
 
-    // ৪. ডাটা ফরম্যাটিং
     const formattedListings = listings.map((item) => {
       const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
-
-      // প্রোমোশন স্ট্যাটাস চেক (স্কিমা অনুযায়ী)
       const isBoostActive =
         item.promotion?.boost?.isActive && new Date(item.promotion.boost.expiresAt) > new Date();
       const isPpcActive = item.promotion?.ppc?.isActive && (item.promotion.ppc.ppcBalance || 0) > 0;
@@ -672,7 +662,6 @@ export const getMyListings = async (req, res) => {
         culturalTags: (item.culturalTags || []).filter((t) => t && t._id),
         isFavorited: safeFavorites.some((favId) => favId?.toString() === currentUserId),
         favoritesCount: safeFavorites.length,
-        // ফ্রন্টএন্ডের সুবিধার জন্য প্রোমোশন স্ট্যাটাস
         isPromoted: isBoostActive || isPpcActive,
         activePromoTypes: {
           boost: isBoostActive,
@@ -703,7 +692,6 @@ export const toggleFavorite = async (req, res) => {
 
     ensureListingFavoriteState(listing);
 
-    // ১. ফেভারিট অ্যাড বা রিমুভ করা
     const isFavorited = listing.favorites.some((favoriteId) => favoriteId?.equals?.(userId));
 
     if (isFavorited) {
@@ -712,8 +700,6 @@ export const toggleFavorite = async (req, res) => {
       listing.favorites.addToSet(userId);
     }
 
-    // ২. প্রোমোশন লজিক এবং লেভেল আপডেট
-    // ফেভারিট কাউন্ট পরিবর্তনের ফলে র‍্যাঙ্কিং লেভেল অটোমেটিক আপডেট হবে
     applyPromotionLogic(listing);
 
     await listing.save();
@@ -723,14 +709,13 @@ export const toggleFavorite = async (req, res) => {
       creatorId: listing.creatorId,
     });
 
-    // ৩. রেসপন্স পাঠানো
     res.status(200).json({
       success: true,
       message: isFavorited ? 'Removed from favorites' : 'Added to favorites',
       isFavorited: !isFavorited,
       favoritesCount: listing.favorites.length,
-      newLevel: listing.promotion.level, // আপডেট হওয়া লেভেল
-      isPromoted: listing.isPromoted, // বুস্ট বা লেভেলের কারণে প্রমোটেড কি না
+      newLevel: listing.promotion.level,
+      isPromoted: listing.isPromoted,
     });
   } catch (error) {
     console.error('Favorite Toggle Error:', error);
@@ -751,7 +736,6 @@ export const getMyFavorites = async (req, res) => {
     const resPerPage = parseInt(limit) || 12;
     const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
 
-    // ১. প্রথমে ফেভারিট লিস্টিংগুলো ফেচ করা
     const [listings, totalListings] = await Promise.all([
       Listing.find(query)
         .populate('creatorId', 'username profile firstName lastName')
@@ -764,12 +748,9 @@ export const getMyFavorites = async (req, res) => {
       Listing.countDocuments(query),
     ]);
 
-    // ২. প্রতিটি লিস্টিংয়ের ক্রিয়েটরের এপ্রুভড লিস্টিং সংখ্যা বের করা (প্যারালাল কোয়েরি)
     const formattedListings = await Promise.all(
       listings.map(async (item) => {
         const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
-
-        // ক্রিয়েটরের এপ্রুভড লিস্টিং কাউন্ট (Real-time count)
         const creatorActiveCount = await Listing.countDocuments({
           creatorId: item.creatorId?._id,
           status: 'approved',
@@ -782,7 +763,7 @@ export const getMyFavorites = async (req, res) => {
         return {
           ...item,
           isPromoted: effectiveIsPromoted,
-          isFavorited: true, // যেহেতু এটি ফেভারিট লিস্ট
+          isFavorited: true,
           favoritesCount: safeFavorites.length,
           creatorStats: {
             totalApprovedListings: creatorActiveCount,
@@ -791,7 +772,6 @@ export const getMyFavorites = async (req, res) => {
       })
     );
 
-    // ৩. ফাইনাল রেসপন্স
     res.status(200).json({
       success: true,
       total: totalListings,
@@ -836,7 +816,6 @@ export const deleteListing = async (req, res) => {
     await Listing.findByIdAndDelete(id);
 
     const remainingCount = await Listing.countDocuments({ creatorId: req.user._id });
-
     await User.findByIdAndUpdate(req.user._id, {
       listingsCount: remainingCount,
     });
@@ -936,10 +915,7 @@ export const cancelPromotion = async (req, res) => {
 export const getModerationReasons = async (req, res) => {
   try {
     const reasonCodes = Listing.schema.path('rejectionReason').enumValues;
-
-    // খালি ভ্যালু থাকলে সেগুলো ফিল্টার করা
     const filteredReasons = reasonCodes.filter((reason) => reason && reason !== '');
-
     res.status(200).json({
       success: true,
       reasons: filteredReasons,

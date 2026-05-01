@@ -99,6 +99,10 @@ const userSchema = new mongoose.Schema(
     listingsCount: { type: Number, default: 0 },
     resetPasswordToken: String,
     resetPasswordExpire: Date,
+
+    emailVerificationToken: { type: String },
+    emailVerificationExpire: { type: Date },
+    isEmailVerified: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
