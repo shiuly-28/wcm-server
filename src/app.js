@@ -4,6 +4,7 @@ import path from 'path';
 import cors from 'cors';
 import { globalLimiter } from './utils/rateLimiter.js';
 
+// --- Existing Routes ---
 import userRoutes from './routes/userRoutes.js';
 import listingRoutes from './routes/listingRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
@@ -17,30 +18,41 @@ import faqRoutes from './routes/faqRoutes.js';
 import seoRoutes from './routes/seoRoutes.js';
 import footerRoutes from './routes/footerRoutes.js';
 
+// --- New About Route (Based on our Discussion) ---
+import aboutRoutes from './routes/aboutRoutes.js';
+
 const app = express();
+
+// Proxy trust for rate limiting (if using Vercel/Render/Heroku)
 app.set('trust proxy', 1);
 
 const __dirname = path.resolve();
 
+// --- Middlewares ---
 app.use(
   cors({
     origin: process.env.CLIENT_URL || 'http://localhost:3000',
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    // এখানে 'PATCH' যোগ করে দিন
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'stripe-signature'],
   })
 );
 
 app.use(cookieParser());
-
 app.use(globalLimiter);
 
-// Stripe Webhook এর জন্য এটি json() এর উপরে থাকা ভালো
+/**
+ * ⚠️ IMPORTANT: 
+ * Stripe Webhook route must be BEFORE express.json()
+ * because it needs the raw body to verify the signature.
+ */
 app.use('/api/payments', paymentRoutes);
 
+// General JSON Parsing
 app.use(express.json());
 
-// Routes
+// --- Routes Registration ---
 app.use('/api/users', userRoutes);
 app.use('/api/creator', creatorRoutes);
 app.use('/api/listings', listingRoutes);
@@ -53,10 +65,30 @@ app.use('/api/faqs', faqRoutes);
 app.use('/api/seo', seoRoutes);
 app.use('/api/footer', footerRoutes);
 
+/**
+ * @section About Page Route
+ * This handles all dynamic content for the About Us page
+ * Powered by AboutPageSchema and AboutController
+ */
+app.use('/api/about', aboutRoutes);
+
+// --- Static Assets ---
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Root Route
 app.get('/', (req, res) => {
-  res.send('Server is running....');
+  res.send('World Culture Marketplace (WCM) Server is running....');
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  const statusCode = err.statusCode || 500;
+  const message = err.message || "Internal Server Error";
+  res.status(statusCode).json({
+    success: false,
+    statusCode,
+    message,
+  });
 });
 
 export default app;
