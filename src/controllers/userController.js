@@ -74,7 +74,7 @@ export const registerUser = async (req, res) => {
     }
 
     const { data, error } = await resend.emails.send({
-      from: 'World Culture Marketplace <onboarding@resend.dev>', // ডোমেইন ভেরিফাই না করা পর্যন্ত এটিই থাকবে
+      from: 'World Culture Marketplace <onboarding@resend.dev>', 
       to: [email],
       subject: 'Verify your email address',
       html: `

@@ -16,6 +16,9 @@ import viewsRoutes from './routes/viewsRoutes.js';
 import faqRoutes from './routes/faqRoutes.js';
 import seoRoutes from './routes/seoRoutes.js';
 import footerRoutes from './routes/footerRoutes.js';
+import logRoutes from './routes/logRoutes.js';
+import { logger } from './utils/logger.js';
+import emailRoutes from "./routes/subscriptionEmails.js"
 
 const app = express();
 app.set('trust proxy', 1);
@@ -35,7 +38,6 @@ app.use(cookieParser());
 
 app.use(globalLimiter);
 
-// Stripe Webhook এর জন্য এটি json() এর উপরে থাকা ভালো
 app.use('/api/payments', paymentRoutes);
 
 app.use(express.json());
@@ -52,8 +54,25 @@ app.use('/api/views', viewsRoutes);
 app.use('/api/faqs', faqRoutes);
 app.use('/api/seo', seoRoutes);
 app.use('/api/footer', footerRoutes);
+app.use('/api/emails', emailRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+app.use('/api/monitoring', logRoutes);
+
+app.use((err, req, res, next) => {
+  logger.error({
+    message: err.message,
+    stack: err.stack,
+    path: req.originalUrl,
+    method: req.method,
+  });
+
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal Server Error',
+  });
+});
 
 app.get('/', (req, res) => {
   res.send('Server is running....');
