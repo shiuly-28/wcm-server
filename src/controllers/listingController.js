@@ -431,21 +431,170 @@ export const updateListing = async (req, res) => {
 // ─────────────────────────────────────────────
 // Public listings fetch করা
 // ─────────────────────────────────────────────
+// export const getPublicListings = async (req, res) => {
+//   try {
+//     const { filter, search, category, continent, tradition, creatorId, limit, page, offset } =
+//       req.query;
+//     const currentUserId = req.user ? req.user._id.toString() : 'anonymous';
+
+//     // Cache key তৈরি
+//     const queryStr = JSON.stringify({ ...req.query, currentUserId });
+//     const hash = crypto.createHash('md5').update(queryStr).digest('hex');
+//     const cacheKey = await buildVersionedCacheKey('listings:public', hash);
+//     const cachedData = parseCachedJson(await getCache(cacheKey));
+
+//     if (cachedData) {
+//       return res.status(200).json(cachedData);
+//     }
+
+//     let query = { status: 'approved' };
+
+//     // Category filter
+//     if (category && category !== 'All' && category !== 'undefined') {
+//       if (mongoose.Types.ObjectId.isValid(category)) {
+//         query.category = category;
+//       } else {
+//         const categoryTitle = category.replace(/-/g, ' ');
+//         const foundCategory = await Category.findOne({
+//           title: { $regex: new RegExp(`^${categoryTitle}$`, 'i') },
+//         })
+//           .select('_id')
+//           .lean();
+
+//         if (foundCategory) query.category = foundCategory._id;
+//         else query.category = new mongoose.Types.ObjectId();
+//       }
+//     }
+
+//     // Continent filter
+//     if (
+//       continent &&
+//       continent !== 'All' &&
+//       continent !== 'All Regions' &&
+//       continent !== 'undefined'
+//     ) {
+//       const continentSlug = continent.toLowerCase().trim();
+//       query.continent = { $regex: new RegExp(`^${continentSlug}$`, 'i') };
+//     }
+
+//     // Tradition filter
+//     if (tradition && tradition !== 'All') {
+//       query.tradition = { $regex: tradition, $options: 'i' };
+//     }
+
+//     // Date filter
+//     const now = new Date();
+//     if (filter === 'Today') {
+//       query.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
+//     } else if (filter === 'This week') {
+//       const startOfWeek = new Date();
+//       startOfWeek.setDate(now.getDate() - 7);
+//       query.createdAt = { $gte: startOfWeek.setHours(0, 0, 0, 0) };
+//     }
+
+//     if (creatorId) query.creatorId = creatorId;
+
+//     // Search filter
+//     if (search) {
+//       const searchRegex = { $regex: search, $options: 'i' };
+//       const [matchingTags, matchingCategories] = await Promise.all([
+//         Tag.find({ title: searchRegex }).distinct('_id'),
+//         Category.find({ title: searchRegex }).distinct('_id'),
+//       ]);
+
+//       query.$or = [
+//         { title: searchRegex },
+//         { description: searchRegex },
+//         { country: searchRegex },
+//         { continent: searchRegex },
+//         { culturalTags: { $in: matchingTags } },
+//         { category: { $in: matchingCategories } },
+//       ];
+//     }
+
+//     const resPerPage = parseInt(limit) || 10;
+//     const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
+
+//     const [listings, totalListings] = await Promise.all([
+//       Listing.find(query)
+//         .populate('creatorId', 'username profile listingsCount')
+//         .populate('category', 'title')
+//         .populate('culturalTags', 'title image')
+//         .sort({ isPromoted: -1, 'promotion.level': -1, views: -1, createdAt: -1 })
+//         .limit(resPerPage)
+//         .skip(skip)
+//         .lean(),
+//       Listing.countDocuments(query),
+//     ]);
+
+//     // FIX: N+1 query সমস্যা সমাধান — সব creatorId একসাথে aggregate করা
+//     const creatorIds = [...new Set(listings.map((l) => l.creatorId?._id?.toString()).filter(Boolean))];
+
+//     const creatorListingCounts = await Listing.aggregate([
+//       {
+//         $match: {
+//           creatorId: { $in: creatorIds.map((id) => new mongoose.Types.ObjectId(id)) },
+//           status: 'approved',
+//         },
+//       },
+//       {
+//         $group: {
+//           _id: '$creatorId',
+//           count: { $sum: 1 },
+//         },
+//       },
+//     ]);
+
+//     const creatorCountMap = {};
+//     creatorListingCounts.forEach((entry) => {
+//       creatorCountMap[entry._id.toString()] = entry.count;
+//     });
+
+//     const formattedListings = listings.map((item) => {
+//       const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+//       const creatorId = item.creatorId?._id?.toString();
+
+//       const effectiveIsPromoted =
+//         (item.promotion?.boost?.isActive && !item.promotion?.boost?.isPaused) ||
+//         (item.promotion?.ppc?.isActive && !item.promotion?.ppc?.isPaused);
+
+//       return {
+//         ...item,
+//         isPromoted: effectiveIsPromoted,
+//         isFavorited:
+//           currentUserId !== 'anonymous'
+//             ? safeFavorites.some((f) => f.toString() === currentUserId)
+//             : false,
+//         favoritesCount: safeFavorites.length,
+//         creatorStats: {
+//           totalApprovedListings: creatorCountMap[creatorId] || 0,
+//         },
+//       };
+//     });
+
+//     const responseData = {
+//       success: true,
+//       total: totalListings,
+//       count: formattedListings.length,
+//       currentPage: parseInt(page) || 1,
+//       nextOffset: skip + formattedListings.length,
+//       hasMore: skip + formattedListings.length < totalListings,
+//       listings: formattedListings,
+//     };
+
+//     await setCache(cacheKey, responseData, 600);
+//     res.status(200).json(responseData);
+//   } catch (error) {
+//     console.error('Public Listings Error:', error);
+//     res.status(500).json({ success: false, message: 'Server Error' });
+//   }
+// };
+
 export const getPublicListings = async (req, res) => {
   try {
     const { filter, search, category, continent, tradition, creatorId, limit, page, offset } =
       req.query;
     const currentUserId = req.user ? req.user._id.toString() : 'anonymous';
-
-    // Cache key তৈরি
-    const queryStr = JSON.stringify({ ...req.query, currentUserId });
-    const hash = crypto.createHash('md5').update(queryStr).digest('hex');
-    const cacheKey = await buildVersionedCacheKey('listings:public', hash);
-    const cachedData = parseCachedJson(await getCache(cacheKey));
-
-    if (cachedData) {
-      return res.status(200).json(cachedData);
-    }
 
     let query = { status: 'approved' };
 
@@ -515,20 +664,114 @@ export const getPublicListings = async (req, res) => {
     const resPerPage = parseInt(limit) || 10;
     const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
 
-    const [listings, totalListings] = await Promise.all([
-      Listing.find(query)
-        .populate('creatorId', 'username profile listingsCount')
-        .populate('category', 'title')
-        .populate('culturalTags', 'title image')
-        .sort({ isPromoted: -1, 'promotion.level': -1, views: -1, createdAt: -1 })
-        .limit(resPerPage)
-        .skip(skip)
-        .lean(),
-      Listing.countDocuments(query),
-    ]);
+    // Priority sort:
+    // 1. ppc active & not paused
+    // 2. boost active & not paused
+    // 3. favorites count (descending)
+    // 4. ppc totalClicks (descending)
+    // 5. views (descending)
+    // 6. createdAt (descending, newest first)
+    const sortStage = {
+      'promotion.ppc.isActive': -1,
+      'promotion.ppc.isPaused': 1, // false (0) আগে আসে → active পিপিসি উপরে
+      'promotion.boost.isActive': -1,
+      'promotion.boost.isPaused': 1, // false (0) আগে আসে → active বুস্ট উপরে
+      favoritesCount: -1,
+      'promotion.ppc.totalClicks': -1,
+      views: -1,
+      createdAt: -1,
+    };
 
-    // FIX: N+1 query সমস্যা সমাধান — সব creatorId একসাথে aggregate করা
-    const creatorIds = [...new Set(listings.map((l) => l.creatorId?._id?.toString()).filter(Boolean))];
+    // favoritesCount computed field দরকার — aggregate use করতে হবে
+    const pipeline = [
+      { $match: query },
+      {
+        $addFields: {
+          favoritesCount: { $size: { $ifNull: ['$favorites', []] } },
+          ppcActiveScore: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ['$promotion.ppc.isActive', true] },
+                  { $ne: ['$promotion.ppc.isPaused', true] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+          boostActiveScore: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ['$promotion.boost.isActive', true] },
+                  { $ne: ['$promotion.boost.isPaused', true] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $sort: {
+          ppcActiveScore: -1,
+          boostActiveScore: -1,
+          favoritesCount: -1,
+          'promotion.ppc.totalClicks': -1,
+          views: -1,
+          createdAt: -1,
+        },
+      },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          listings: [
+            { $skip: skip },
+            { $limit: resPerPage },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'creatorId',
+                foreignField: '_id',
+                as: 'creatorId',
+                pipeline: [{ $project: { username: 1, profile: 1, listingsCount: 1 } }],
+              },
+            },
+            { $unwind: { path: '$creatorId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'categories',
+                localField: 'category',
+                foreignField: '_id',
+                as: 'category',
+                pipeline: [{ $project: { title: 1 } }],
+              },
+            },
+            { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'tags',
+                localField: 'culturalTags',
+                foreignField: '_id',
+                as: 'culturalTags',
+                pipeline: [{ $project: { title: 1, image: 1 } }],
+              },
+            },
+          ],
+        },
+      },
+    ];
+
+    const [result] = await Listing.aggregate(pipeline);
+    const totalListings = result.metadata[0]?.total || 0;
+    const listings = result.listings || [];
+
+    // N+1 fix: creatorId গুলো একসাথে aggregate
+    const creatorIds = [
+      ...new Set(listings.map((l) => l.creatorId?._id?.toString()).filter(Boolean)),
+    ];
 
     const creatorListingCounts = await Listing.aggregate([
       {
@@ -537,12 +780,7 @@ export const getPublicListings = async (req, res) => {
           status: 'approved',
         },
       },
-      {
-        $group: {
-          _id: '$creatorId',
-          count: { $sum: 1 },
-        },
-      },
+      { $group: { _id: '$creatorId', count: { $sum: 1 } } },
     ]);
 
     const creatorCountMap = {};
@@ -572,7 +810,7 @@ export const getPublicListings = async (req, res) => {
       };
     });
 
-    const responseData = {
+    return res.status(200).json({
       success: true,
       total: totalListings,
       count: formattedListings.length,
@@ -580,15 +818,13 @@ export const getPublicListings = async (req, res) => {
       nextOffset: skip + formattedListings.length,
       hasMore: skip + formattedListings.length < totalListings,
       listings: formattedListings,
-    };
-
-    await setCache(cacheKey, responseData, 600);
-    res.status(200).json(responseData);
+    });
   } catch (error) {
     console.error('Public Listings Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 };
+
 // SHARED UTILITY: category-র listing গুলো rank করা + creator populate করা
 // FIX: creatorStats.totalApprovedListings যোগ করা হয়েছে
 // ─────────────────────────────────────────────────────────────────────────────
