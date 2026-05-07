@@ -57,7 +57,7 @@ const listingSchema = new mongoose.Schema(
       pinnedPosition: {
         type: Number,
         default: null,
-        enum: [1, 2, 3, 4, null]
+        enum: [1, 2, 3, 4, null],
       },
       boost: {
         isActive: { type: Boolean, default: false },
@@ -78,6 +78,8 @@ const listingSchema = new mongoose.Schema(
       isPromoted: { type: Boolean, default: false },
     },
     views: { type: Number, default: 0 },
+
+    score: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
@@ -99,7 +101,7 @@ listingSchema.index({ isPromoted: 1 });
 listingSchema.index({ status: 1 });
 
 // Pinned position-এর জন্য ইনডেক্স যাতে কুয়েরি ফাস্ট হয়
-listingSchema.index({ "promotion.pinnedPosition": 1 });
+listingSchema.index({ 'promotion.pinnedPosition': 1 });
 
 const Listing = mongoose.model('Listing', listingSchema);
 export default Listing;
