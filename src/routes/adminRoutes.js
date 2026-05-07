@@ -7,8 +7,8 @@ import {
   toggleUserStatus,
   manageListings,
   updateListingStatus,
-  pinListing,           // পিন কন্ট্রোলার ইম্পোর্ট নিশ্চিত করা হয়েছে
-  unpinListing,         // আনপিন কন্ট্রোলার ইম্পোর্ট নিশ্চিত করা হয়েছে
+  pinListing, // পিন কন্ট্রোলার ইম্পোর্ট নিশ্চিত করা হয়েছে
+  unpinListing, // আনপিন কন্ট্রোলার ইম্পোর্ট নিশ্চিত করা হয়েছে
   createTag,
   createCategory,
   updateCategory,
@@ -41,7 +41,7 @@ import {
   getPageContent,
   updatePageContent,
   // --- Combined Asset ---
-  getCategoryAssets
+  getCategoryAssets,
 } from '../controllers/adminController.js';
 
 // আপনার বিদ্যমান মিডলওয়্যার ইম্পোর্ট

@@ -357,79 +357,79 @@ export const deleteTag = async (req, res) => {
   }
 };
 
-export const getAllUsers = async (req, res) => {
-  try {
-    // status ফিল্টারটি ডিকনস্ট্রাক্ট করা হয়েছে
-    const {
-      search = '',
-      role = 'all',
-      status = 'all',
-      timeRange = 'all',
-      page = 1,
-      limit = 20,
-    } = req.query;
+// export const getAllUsers = async (req, res) => {
+//   try {
+//     // status ফিল্টারটি ডিকনস্ট্রাক্ট করা হয়েছে
+//     const {
+//       search = '',
+//       role = 'all',
+//       status = 'all',
+//       timeRange = 'all',
+//       page = 1,
+//       limit = 20,
+//     } = req.query;
 
-    let query = {};
-    const now = new Date();
+//     let query = {};
+//     const now = new Date();
 
-    // ১. সার্চ লজিক (Name, Email বা Username দিয়ে)
-    if (search) {
-      query.$or = [
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { username: { $regex: search, $options: 'i' } },
-      ];
-    }
+//     // ১. সার্চ লজিক (Name, Email বা Username দিয়ে)
+//     if (search) {
+//       query.$or = [
+//         { firstName: { $regex: search, $options: 'i' } },
+//         { lastName: { $regex: search, $options: 'i' } },
+//         { email: { $regex: search, $options: 'i' } },
+//         { username: { $regex: search, $options: 'i' } },
+//       ];
+//     }
 
-    // ২. রোল ফিল্টারিং (Admin, Creator, User)
-    if (role !== 'all') {
-      query.role = role;
-    }
+//     // ২. রোল ফিল্টারিং (Admin, Creator, User)
+//     if (role !== 'all') {
+//       query.role = role;
+//     }
 
-    // ৩. স্ট্যাটাস ফিল্টারিং (Active, Blocked, Suspended) - এটি নতুন যোগ করা হয়েছে
-    if (status !== 'all') {
-      query.status = status;
-    }
+//     // ৩. স্ট্যাটাস ফিল্টারিং (Active, Blocked, Suspended) - এটি নতুন যোগ করা হয়েছে
+//     if (status !== 'all') {
+//       query.status = status;
+//     }
 
-    // ৪. টাইম রেঞ্জ ফিল্টারিং (নতুন ইউজার কবে জয়েন করেছে)
-    if (timeRange !== 'all') {
-      let startDate = new Date();
-      if (timeRange === 'today') {
-        startDate.setHours(0, 0, 0, 0);
-      } else if (timeRange === 'week') {
-        startDate.setDate(now.getDate() - 7);
-      } else if (timeRange === 'month') {
-        startDate.setMonth(now.getMonth() - 1);
-      }
-      query.createdAt = { $gte: startDate };
-    }
+//     // ৪. টাইম রেঞ্জ ফিল্টারিং (নতুন ইউজার কবে জয়েন করেছে)
+//     if (timeRange !== 'all') {
+//       let startDate = new Date();
+//       if (timeRange === 'today') {
+//         startDate.setHours(0, 0, 0, 0);
+//       } else if (timeRange === 'week') {
+//         startDate.setDate(now.getDate() - 7);
+//       } else if (timeRange === 'month') {
+//         startDate.setMonth(now.getMonth() - 1);
+//       }
+//       query.createdAt = { $gte: startDate };
+//     }
 
-    // ৫. ডাটাবেস থেকে ডাটা আনা (প্যাজিনেশনসহ)
-    const users = await User.find(query)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .limit(Number(limit))
-      .skip((Number(page) - 1) * Number(limit))
-      .lean();
+//     // ৫. ডাটাবেস থেকে ডাটা আনা (প্যাজিনেশনসহ)
+//     const users = await User.find(query)
+//       .select('-password')
+//       .sort({ createdAt: -1 })
+//       .limit(Number(limit))
+//       .skip((Number(page) - 1) * Number(limit))
+//       .lean();
 
-    // ৬. টোটাল কাউন্ট (ফ্রন্টএন্ড প্যাজিনেশনের জন্য)
-    const totalUsers = await User.countDocuments(query);
+//     // ৬. টোটাল কাউন্ট (ফ্রন্টএন্ড প্যাজিনেশনের জন্য)
+//     const totalUsers = await User.countDocuments(query);
 
-    res.status(200).json({
-      success: true,
-      users,
-      pagination: {
-        totalUsers,
-        totalPages: Math.ceil(totalUsers / limit),
-        currentPage: Number(page),
-      },
-    });
-  } catch (error) {
-    console.error('Get All Users Error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
+//     res.status(200).json({
+//       success: true,
+//       users,
+//       pagination: {
+//         totalUsers,
+//         totalPages: Math.ceil(totalUsers / limit),
+//         currentPage: Number(page),
+//       },
+//     });
+//   } catch (error) {
+//     console.error('Get All Users Error:', error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
 
 export const getCreatorRequests = async (req, res) => {
   try {
@@ -743,57 +743,160 @@ export const updateCategoryOrder = async (req, res) => {
   }
 };
 
+export const getAllUsers = async (req, res) => {
+  try {
+    const {
+      search = '',
+      role = 'all',
+      status = 'all',
+      dateFrom = '',
+      dateTo = '',
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    let query = {};
+
+    if (search) {
+      query.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { username: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    if (role !== 'all') query.role = role;
+    if (status !== 'all') query.status = status;
+
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = end;
+      }
+    }
+
+    const [users, totalUsers] = await Promise.all([
+      User.find(query)
+        .select('-password')
+        .sort({ createdAt: -1 })
+        .limit(Number(limit))
+        .skip((Number(page) - 1) * Number(limit))
+        .lean(),
+      User.countDocuments(query),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      users,
+      pagination: {
+        totalUsers,
+        totalPages: Math.ceil(totalUsers / Number(limit)),
+        currentPage: Number(page),
+      },
+    });
+  } catch (error) {
+    console.error('Get All Users Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// exportUsersExcel
 export const exportUsersExcel = async (req, res) => {
   try {
-    // 🔍 শুধুমাত্র যাদের রোল 'creator' তাদের ফিল্টার করুন
-    const userCursor = User.find({ role: 'creator' }).select('-password').cursor();
+    const { role, status, dateFrom, dateTo, search } = req.query;
+
+    const filter = {};
+    if (role && role !== 'all') filter.role = role;
+    if (status && status !== 'all') filter.status = status;
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = end;
+      }
+    }
+    if (search) {
+      filter.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { username: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const userCursor = User.find(filter).select('-password').cursor();
 
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('System Creators List');
+    const worksheet = workbook.addWorksheet('Users Export');
 
-    // কালার কোড এবং হেডার (SaaS Style)
     worksheet.columns = [
-      { header: 'ID', key: '_id', width: 25 },
-      { header: 'FULL NAME', key: 'fullName', width: 25 },
-      { header: 'BUSINESS NAME', key: 'businessName', width: 25 }, // নতুন অ্যাড করা হয়েছে
-      { header: 'EMAIL', key: 'email', width: 30 },
+      { header: 'ID', key: '_id', width: 26 },
+      { header: 'FIRST NAME', key: 'firstName', width: 18 },
+      { header: 'LAST NAME', key: 'lastName', width: 18 },
+      { header: 'BUSINESS NAME', key: 'businessName', width: 24 },
+      { header: 'EMAIL', key: 'email', width: 32 },
       { header: 'USERNAME', key: 'username', width: 20 },
-      { header: 'STATUS', key: 'status', width: 12 },
-      { header: 'COUNTRY', key: 'country', width: 15 },
+      { header: 'ROLE', key: 'role', width: 12 },
+      { header: 'STATUS', key: 'status', width: 14 },
+      { header: 'COUNTRY', key: 'country', width: 16 },
+      { header: 'CITY', key: 'city', width: 16 },
+      { header: 'WEBSITE', key: 'websiteLink', width: 28 },
+      { header: 'EMAIL VERIFIED', key: 'isEmailVerified', width: 16 },
+      { header: 'WALLET BALANCE', key: 'walletBalance', width: 16 },
+      { header: 'LISTINGS COUNT', key: 'listingsCount', width: 16 },
       { header: 'JOIN DATE', key: 'createdAt', width: 20 },
     ];
 
-    // হেডার স্টাইল (Orange Theme)
-    worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    worksheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFEA580C' },
-    };
+    // Header style
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEA580C' } };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+    headerRow.height = 22;
 
     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
-      const profile = user.profile || {};
-
-      worksheet.addRow({
+      const row = worksheet.addRow({
         _id: user._id.toString(),
-        fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'N/A',
-        businessName: profile.businessName || 'N/A', // আপনার স্কিমা অনুযায়ী
-        email: user.email || 'N/A',
-        username: user.username || 'N/A',
+        firstName: user.firstName || '',
+        lastName: user.lastName || '',
+        businessName: user.profile?.businessName || '',
+        email: user.email || '',
+        username: user.username || '',
+        role: (user.role || 'user').toUpperCase(),
         status: (user.status || 'active').toUpperCase(),
-        country: profile.country || 'N/A',
-        createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : 'N/A',
+        country: user.profile?.country || '',
+        city: user.profile?.city || '',
+        websiteLink: user.profile?.websiteLink || '',
+        isEmailVerified: user.isEmailVerified ? 'YES' : 'NO',
+        walletBalance: user.walletBalance ?? 0,
+        listingsCount: user.listingsCount ?? 0,
+        createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : '',
       });
+
+      // Alternate row color
+      if (row.number % 2 === 0) {
+        row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF8F5' } };
+      }
     }
 
-    const fileName = `WCM_Creators_List_${new Date().toISOString().split('T')[0]}.xlsx`;
+    // Auto-filter
+    worksheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: worksheet.columns.length },
+    };
 
+    const fileName = `WCM_Users_Export_${new Date().toISOString().split('T')[0]}.xlsx`;
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
-    res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     await workbook.xlsx.write(res);
     return res.end();
   } catch (error) {
@@ -801,6 +904,65 @@ export const exportUsersExcel = async (req, res) => {
     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 };
+
+// export const exportUsersExcel = async (req, res) => {
+//   try {
+//     // 🔍 শুধুমাত্র যাদের রোল 'creator' তাদের ফিল্টার করুন
+//     const userCursor = User.find({ role: 'creator' }).select('-password').cursor();
+
+//     const workbook = new ExcelJS.Workbook();
+//     const worksheet = workbook.addWorksheet('System Creators List');
+
+//     // কালার কোড এবং হেডার (SaaS Style)
+//     worksheet.columns = [
+//       { header: 'ID', key: '_id', width: 25 },
+//       { header: 'FULL NAME', key: 'fullName', width: 25 },
+//       { header: 'BUSINESS NAME', key: 'businessName', width: 25 }, // নতুন অ্যাড করা হয়েছে
+//       { header: 'EMAIL', key: 'email', width: 30 },
+//       { header: 'USERNAME', key: 'username', width: 20 },
+//       { header: 'STATUS', key: 'status', width: 12 },
+//       { header: 'COUNTRY', key: 'country', width: 15 },
+//       { header: 'JOIN DATE', key: 'createdAt', width: 20 },
+//     ];
+
+//     // হেডার স্টাইল (Orange Theme)
+//     worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+//     worksheet.getRow(1).fill = {
+//       type: 'pattern',
+//       pattern: 'solid',
+//       fgColor: { argb: 'FFEA580C' },
+//     };
+
+//     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
+//       const profile = user.profile || {};
+
+//       worksheet.addRow({
+//         _id: user._id.toString(),
+//         fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'N/A',
+//         businessName: profile.businessName || 'N/A', // আপনার স্কিমা অনুযায়ী
+//         email: user.email || 'N/A',
+//         username: user.username || 'N/A',
+//         status: (user.status || 'active').toUpperCase(),
+//         country: profile.country || 'N/A',
+//         createdAt: user.createdAt ? user.createdAt.toISOString().split('T')[0] : 'N/A',
+//       });
+//     }
+
+//     const fileName = `WCM_Creators_List_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+//     res.setHeader(
+//       'Content-Type',
+//       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+//     );
+//     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+
+//     await workbook.xlsx.write(res);
+//     return res.end();
+//   } catch (error) {
+//     console.error('EXPORT ERROR:', error);
+//     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
+//   }
+// };
 
 export const exportTransactionsExcel = async (req, res) => {
   try {
